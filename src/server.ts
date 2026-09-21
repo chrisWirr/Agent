@@ -215,9 +215,10 @@ Hypothesis -> Experiment -> Evidence -> Decision -> Reallocation.
 
 Your ultimate objective is to build a network that becomes progressively better at discovering and exploiting legitimate economic opportunities.
 
-` 
+${getSchedulePrompt({ date: new Date() })}
 
-If the user asks to schedule a task, use the schedule tool to schedule the task.`,
+If the user asks to schedule a task, use the schedule tool to schedule the task.
+`,
       // Prune old tool calls and reasoning to save tokens on long conversations
       messages: pruneMessages({
         messages: await convertToModelMessages(this.messages),
