@@ -1,5 +1,5 @@
 {
-  "name": "agent-starter",
+  "name": "agent",
   "version": "1.0.0",
   "private": true,
   "description": "Starter template for building AI chat agents on Cloudflare",
@@ -17,10 +17,11 @@
     "types": "wrangler types env.d.ts",
     "format": "oxfmt --write .",
     "lint": "oxlint src/",
+    "test:autonomy": "tsx --test src/autonomy/autonomy.test.ts",
     "check": "oxfmt --check . && oxlint src/ && tsc"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^2.0.75",
+    "@ai-sdk/openai-compatible": "^2.0.76",
     "@cloudflare/ai-chat": "^0.9.3",
     "@cloudflare/kumo": "^2.6.0",
     "@phosphor-icons/react": "^2.1.10",
@@ -45,6 +46,7 @@
     "oxfmt": "^0.56.0",
     "oxlint": "^1.71.0",
     "tailwindcss": "^4.3.1",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vite": "^8.1.0",
     "wrangler": "^4.113.0"

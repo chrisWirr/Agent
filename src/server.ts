@@ -1,29 +1,73 @@
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { callable, routeAgentRequest, type Schedule } from "agents";
 import { getSchedulePrompt, scheduleSchema } from "agents/schedule";
-import {
-  AIChatAgent,
-  type OnChatMessageOptions
-} from "@cloudflare/ai-chat";
+import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import {
   convertToModelMessages,
+  jsonSchema,
   pruneMessages,
   stepCountIs,
   streamText,
   tool
 } from "ai";
 import { z } from "zod";
+import { createWorkersAI } from "workers-ai-provider";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createModelRunner } from "./autonomy/model";
+import {
+  compactStateSummary,
+  DEFAULT_LIMITS,
+  runRootMission,
+  runStrategistReview
+} from "./autonomy/orchestrator";
+import { AutonomyStore } from "./autonomy/store";
 
-type AgentEnv = Env & {
-  AGENTROUTER_API_KEY: string;
-};
+async function selectModel(env: Env) {
+  const workersai = createWorkersAI({ binding: env.AI });
+  const fallback = workersai("@cf/zai-org/glm-4.7-flash");
+
+  if (!env.OPENCLAW_BASE_URL || !env.OPENCLAW_GATEWAY_TOKEN) {
+    return fallback;
+  }
+
+  try {
+    const response = await fetch(`${env.OPENCLAW_BASE_URL}/v1/models`, {
+      headers: {
+        authorization: `Bearer ${env.OPENCLAW_GATEWAY_TOKEN}`
+      },
+      signal: AbortSignal.timeout(2500)
+    });
+
+    if (!response.ok) {
+      console.warn(`OpenClaw health check failed with ${response.status}`);
+      return fallback;
+    }
+
+    const openclaw = createOpenAICompatible({
+      name: "openclaw",
+      baseURL: `${env.OPENCLAW_BASE_URL}/v1`,
+      apiKey: env.OPENCLAW_GATEWAY_TOKEN
+    });
+
+    return openclaw("openclaw/default");
+  } catch {
+    console.warn("OpenClaw is unavailable; using Workers AI");
+    return fallback;
+  }
+}
 
 export class ChatAgent extends AIChatAgent<Env> {
   maxPersistedMessages = 100;
   chatRecovery = true;
   waitForMcpConnections = true;
 
-  onStart() {
+  async onStart() {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const configuredMinutes = Number(this.env.STRATEGIST_REVIEW_MINUTES || 360);
+    const minutes = Number.isFinite(configuredMinutes)
+      ? Math.max(60, Math.min(1440, configuredMinutes))
+      : 360;
+    await this.scheduleEvery(minutes * 60, "scheduledStrategistReview");
     this.mcp.configureOAuthCallback({
       customHandler: (result) => {
         if (result.authSuccess) {
@@ -54,195 +98,144 @@ export class ChatAgent extends AIChatAgent<Env> {
     await this.removeMcpServer(serverId);
   }
 
-  async onChatMessage(
-    _onFinish: unknown,
-    options?: OnChatMessageOptions
-  ) {
+  getAutonomyStatus() {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const directives = store.recentDirectives();
+    const missions = store.recentMissions();
+    return {
+      lastDecision: directives[0]?.decision ?? "NONE",
+      currentMission: store.currentMission(),
+      lastMission: missions[0]
+        ? {
+            status: missions[0].status,
+            summary: missions[0].summary,
+            specialistsUsed: missions[0].specialistsUsed,
+            modelCalls: missions[0].modelCalls,
+            toolCalls: missions[0].toolCalls,
+            actualCostUsd: missions[0].actualCostUsd,
+            evidence: missions[0].evidence.slice(0, 5),
+            humanGates: missions[0].humanGates
+          }
+        : null,
+      recentEvents: store.recentEvents()
+    };
+  }
+
+  async scheduledStrategistReview() {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    store.expireStaleMissions(35 * 60 * 1000);
+    const now = Date.now();
+    const dayAgo = now - 24 * 60 * 60 * 1000;
+    const lastReview = store.latestEvent("STRATEGIST_REVIEW");
+    if (store.currentMission()) return;
+    if (
+      store.countEventsSince("STRATEGIST_REVIEW", dayAgo) >=
+      DEFAULT_LIMITS.maxStrategistCallsPerDay
+    )
+      return;
+    if (
+      lastReview &&
+      now - lastReview.created_at <
+        DEFAULT_LIMITS.reviewCooldownMinutes * 60 * 1000
+    )
+      return;
+    const lastDirective = store.recentDirectives()[0];
+    if (
+      lastDirective?.decision === "WAIT" &&
+      !store
+        .eventsAfter(lastReview?.created_at ?? 0)
+        .some((event) =>
+          [
+            "MISSION_COMPLETED",
+            "MISSION_FAILED",
+            "HUMAN_GATE_RESOLVED",
+            "EVIDENCE_RECORDED",
+            "REVENUE_RECORDED",
+            "PROVIDER_RECOVERED"
+          ].includes(event.kind)
+        )
+    )
+      return;
+    if (!store.tryAcquireReview()) return;
+
+    let activeDirectiveId: string | null = null;
+    try {
+      store.recordEvent("STRATEGIST_REVIEW");
+      const previousMissions = store.recentMissions();
+      const summary = compactStateSummary({
+        recentDirectives: store.recentDirectives(),
+        recentMissions: previousMissions,
+        pendingHumanGates: previousMissions.reduce(
+          (sum, mission) => sum + mission.humanGates.length,
+          0
+        ),
+        recentEvents: store.recentEvents()
+      });
+      const runner = createModelRunner(this.env);
+      const { directive, route } = await runStrategistReview(summary, runner);
+      store.saveDirective(directive);
+      if (route.fallbackUsed)
+        store.recordEvent("FALLBACK_USED", {
+          role: "STRATEGIST",
+          reason: route.fallbackReason
+        });
+      if (directive.decision === "WAIT" || directive.decision === "KILL")
+        return;
+      if (
+        store.countEventsSince("MISSION_STARTED", dayAgo) >=
+        DEFAULT_LIMITS.maxMissionsPerDay
+      ) {
+        store.recordEvent("BUDGET_LIMIT_REACHED", {
+          limit: "missions-per-day"
+        });
+        return;
+      }
+      if (!store.tryStartMission(directive.directiveId)) return;
+      activeDirectiveId = directive.directiveId;
+      const result = await runRootMission(
+        directive,
+        { runModel: runner },
+        DEFAULT_LIMITS,
+        (event, payload) => store.recordEvent(event, payload)
+      );
+      store.saveMission(result);
+      activeDirectiveId = null;
+      for (const usedRoute of result.routes) {
+        if (usedRoute.fallbackUsed)
+          store.recordEvent("FALLBACK_USED", {
+            role: "MISSION",
+            reason: usedRoute.fallbackReason
+          });
+      }
+      await this.schedule(
+        DEFAULT_LIMITS.reviewCooldownMinutes * 60,
+        "scheduledStrategistReview",
+        "mission-completed",
+        { idempotent: true }
+      );
+    } catch {
+      if (activeDirectiveId) store.failMission(activeDirectiveId);
+      store.recordEvent("STRATEGIST_REVIEW_FAILED");
+    } finally {
+      store.releaseReview();
+    }
+  }
+
+  async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
     const mcpTools = this.mcp.getAITools();
 
-    const env = this.env as AgentEnv;
-
-    if (!env.AGENTROUTER_API_KEY) {
-      throw new Error("AGENTROUTER_API_KEY is not configured");
-    }
-
-    const agentrouter = createOpenAICompatible({
-      name: "agentrouter",
-      baseURL: "https://co.agentrouter.org/v1",
-      apiKey: env.AGENTROUTER_API_KEY
-    });
-
     const result = streamText({
-      model: agentrouter.chatModel("deepseek-v4-flash"),
+      model: await selectModel(this.env),
 
       system: `
-You are ROOT, the autonomous strategic orchestrator of an economic agent network.
-
-PRIMARY OBJECTIVE:
-Discover, validate and develop lawful opportunities that can produce sustainable REALIZED NET PROFIT.
-
-You are not a generic assistant.
-
-You are the strategic controller of a future multi-agent system.
-
-Your job is to:
-
-- discover potentially profitable opportunities
-- identify the assumptions that matter most
-- design cheap experiments to test them
-- reject weak opportunities quickly
-- allocate effort toward opportunities with the best risk-adjusted expected value
-- record failures and avoid repeating them
-- identify when specialist agents should be created or invoked
-- continuously improve the architecture of the agent network
-
-Optimize for REAL economic outcomes, not activity.
-
-Do NOT treat:
-
-traffic,
-followers,
-generated content,
-number of tasks,
-number of agents,
-theoretical revenue,
-or estimated revenue
-
-as profit.
-
-REALIZED PROFIT means money actually received or contractually secured, minus attributable costs.
-
-For every opportunity evaluate:
-
-1. CUSTOMER
-Who pays?
-
-2. PROBLEM
-What valuable problem exists?
-
-3. SOLUTION
-What can the network provide?
-
-4. MONETIZATION
-Exactly how does money enter the system?
-
-5. EVIDENCE
-What evidence suggests somebody will pay?
-
-6. COST
-Development, inference, infrastructure, API and operating costs.
-
-7. TIME TO REVENUE
-Prefer short feedback loops.
-
-8. REPEATABILITY
-Can the process earn again?
-
-9. AUTOMATION POTENTIAL
-Can agents perform increasing portions of the workflow?
-
-10. RISK
-Legal, platform, technical, financial and reputational risk.
-
-11. CHEAPEST FALSIFICATION TEST
-What is the cheapest experiment capable of proving the idea wrong?
-
-Maintain several opportunity hypotheses rather than becoming attached to one.
-
-Prefer:
-
-small experiments,
-fast feedback,
-reusable assets,
-automation,
-recurring revenue,
-high margins,
-and systems that improve through repeated execution.
-
-Avoid:
-
-fraud,
-spam,
-impersonation,
-fake reviews,
-credential abuse,
-unauthorized access,
-copyright infringement,
-platform manipulation,
-market manipulation,
-or deceptive claims.
-
-Never invent revenue or evidence.
-
-When information is uncertain, explicitly mark it as uncertain.
-
-When blocked:
-
-identify the constraint,
-generate alternatives,
-rank them,
-and continue through the best available path.
-
-Do not stop merely because one branch requires human action.
-
-Instead mark it:
-
-HUMAN_GATE_REQUIRED
-
-and continue productive work elsewhere.
-
-Your future network may contain specialist agents such as:
-
-SCOUT
-Finds opportunities and unmet demand.
-
-VALIDATOR
-Tests whether demand and willingness-to-pay are real.
-
-RESEARCHER
-Obtains missing facts and evidence.
-
-BUILDER
-Creates software, automation, datasets, products or services.
-
-DISTRIBUTION
-Finds legitimate customer acquisition channels.
-
-AUDITOR
-Challenges assumptions, verifies economics and searches for hidden risk.
-
-FINANCE
-Measures actual revenue, costs and net profitability.
-
-You may propose new agent roles whenever evidence justifies them.
-
-Do not create agents merely because more agents seem sophisticated.
-
-Every agent must justify its compute and complexity.
-
-For every serious opportunity produce:
-
-OPPORTUNITY:
-CUSTOMER:
-PROBLEM:
-VALUE PROPOSITION:
-REVENUE MODEL:
-EVIDENCE:
-ESTIMATED COST:
-TIME TO FIRST REVENUE:
-PROBABILITY OF SUCCESS:
-ESTIMATED NET VALUE:
-BIGGEST UNKNOWN:
-CHEAPEST NEXT TEST:
-AUTOMATION POTENTIAL:
-RISK:
-NEXT ACTION:
-
-Always think in terms of:
-
-Hypothesis -> Experiment -> Evidence -> Decision -> Reallocation.
-
-Your ultimate objective is to build a network that becomes progressively better at discovering and exploiting legitimate economic opportunities.
+You are ROOT, the operational orchestrator for a bounded economic agent system.
+STRATEGIST decides what matters and why. You decide how to execute a directive, which evidence is needed, whether a temporary specialist is worth its cost, and how to verify its result.
+The goal is lawful sustainable REALIZED NET PROFIT: money received or contractually secured minus attributable costs. Do not count traffic, followers, activity, or estimated revenue as profit.
+Prefer cheap falsifiable experiments, short feedback loops, reusable assets, and verified external evidence. Separate observations from inferences and never invent customers, prices, URLs, revenue, or tool results.
+Do not spend money, contact people, publish, create external accounts, sign contracts, access sensitive data, change credentials, or make destructive changes without a human gate. State the proposed action and exact approval needed, then continue safe work where possible.
+Your autonomous missions are executed by the separate mission runtime. This chat remains available for conversation and the existing tools.
 
 ${getSchedulePrompt({ date: new Date() })}
 
@@ -264,64 +257,43 @@ If the user asks to schedule a task, use the schedule tool.
             city: z.string().describe("City name")
           }),
           execute: async ({ city }) => {
-            const conditions = [
-              "sunny",
-              "cloudy",
-              "rainy",
-              "snowy"
-            ];
+            const conditions = ["sunny", "cloudy", "rainy", "snowy"];
 
-            const temp =
-              Math.floor(Math.random() * 30) + 5;
+            const temp = Math.floor(Math.random() * 30) + 5;
 
             return {
               city,
               temperature: temp,
               condition:
-                conditions[
-                  Math.floor(
-                    Math.random() * conditions.length
-                  )
-                ],
+                conditions[Math.floor(Math.random() * conditions.length)],
               unit: "celsius"
             };
           }
         }),
 
         getUserTimezone: tool({
-          description:
-            "Get the user's timezone from their browser.",
-          inputSchema: z.object({})
+          description: "Get the user's timezone from their browser.",
+          inputSchema: jsonSchema<Record<string, never>>({
+            type: "object",
+            properties: {},
+            required: [],
+            additionalProperties: false
+          })
         }),
 
         calculate: tool({
-          description:
-            "Perform a math calculation with two numbers.",
+          description: "Perform a math calculation with two numbers.",
           inputSchema: z.object({
             a: z.number(),
             b: z.number(),
-            operator: z.enum([
-              "+",
-              "-",
-              "*",
-              "/",
-              "%"
-            ])
+            operator: z.enum(["+", "-", "*", "/", "%"])
           }),
 
           needsApproval: async ({ a, b }) =>
-            Math.abs(a) > 1000 ||
-            Math.abs(b) > 1000,
+            Math.abs(a) > 1000 || Math.abs(b) > 1000,
 
-          execute: async ({
-            a,
-            b,
-            operator
-          }) => {
-            const ops: Record<
-              string,
-              (x: number, y: number) => number
-            > = {
+          execute: async ({ a, b, operator }) => {
+            const ops: Record<string, (x: number, y: number) => number> = {
               "+": (x, y) => x + y,
               "-": (x, y) => x - y,
               "*": (x, y) => x * y,
@@ -343,15 +315,11 @@ If the user asks to schedule a task, use the schedule tool.
         }),
 
         scheduleTask: tool({
-          description:
-            "Schedule a task to execute later.",
+          description: "Schedule a task to execute later.",
 
           inputSchema: scheduleSchema,
 
-          execute: async ({
-            when,
-            description
-          }) => {
+          execute: async ({ when, description }) => {
             if (when.type === "no-schedule") {
               return "Not a valid schedule input";
             }
@@ -370,14 +338,9 @@ If the user asks to schedule a task, use the schedule tool.
             }
 
             try {
-              this.schedule(
-                input,
-                "executeTask",
-                description,
-                {
-                  idempotent: true
-                }
-              );
+              this.schedule(input, "executeTask", description, {
+                idempotent: true
+              });
 
               return `Task scheduled: "${description}"`;
             } catch (error) {
@@ -387,24 +350,24 @@ If the user asks to schedule a task, use the schedule tool.
         }),
 
         getScheduledTasks: tool({
-          description:
-            "List all scheduled tasks.",
+          description: "List all scheduled tasks.",
 
-          inputSchema: z.object({}),
+          inputSchema: jsonSchema<Record<string, never>>({
+            type: "object",
+            properties: {},
+            required: [],
+            additionalProperties: false
+          }),
 
           execute: async () => {
-            const tasks =
-              this.getSchedules();
+            const tasks = this.getSchedules();
 
-            return tasks.length > 0
-              ? tasks
-              : "No scheduled tasks found.";
+            return tasks.length > 0 ? tasks : "No scheduled tasks found.";
           }
         }),
 
         cancelScheduledTask: tool({
-          description:
-            "Cancel a scheduled task.",
+          description: "Cancel a scheduled task.",
 
           inputSchema: z.object({
             taskId: z.string()
@@ -424,42 +387,29 @@ If the user asks to schedule a task, use the schedule tool.
 
       stopWhen: stepCountIs(20),
 
-      abortSignal:
-        options?.abortSignal
+      abortSignal: options?.abortSignal
     });
 
     return result.toUIMessageStreamResponse();
   }
 
-  async executeTask(
-    description: string,
-    _task: Schedule<string>
-  ) {
-    console.log(
-      `Executing scheduled task: ${description}`
-    );
+  async executeTask(description: string, _task: Schedule<string>) {
+    console.log(`Executing scheduled task: ${description}`);
 
     this.broadcast(
       JSON.stringify({
         type: "scheduled-task",
         description,
-        timestamp:
-          new Date().toISOString()
+        timestamp: new Date().toISOString()
       })
     );
   }
 }
 
 export default {
-  async fetch(
-    request: Request,
-    env: Env
-  ) {
+  async fetch(request: Request, env: Env) {
     return (
-      (await routeAgentRequest(
-        request,
-        env
-      )) ||
+      (await routeAgentRequest(request, env)) ||
       new Response("Not found", {
         status: 404
       })

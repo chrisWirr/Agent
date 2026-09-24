@@ -1,4 +1,5 @@
 # Logs
+.openclaw-workspace/
 logs
 *.log
 npm-debug.log*
@@ -141,4 +142,3 @@ dist
 # Cloudflare
 .wrangler
 .dev.vars
-

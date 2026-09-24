@@ -1,9 +1,12 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "agent-starter",
+  "name": "agent",
   "main": "src/server.ts",
   "compatibility_date": "2026-06-11",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "OPENCLAW_BASE_URL": "https://mustang-they-mounted-newspaper.trycloudflare.com"
+  },
   "ai": { "binding": "AI", "remote": true },
   "assets": {
     "directory": "./public",

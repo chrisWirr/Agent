@@ -1,1 +1,3 @@
+.github/workflows/semgrep.yml
+.openclaw-workspace/
 env.d.ts

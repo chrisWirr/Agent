@@ -1,5 +1,49 @@
 # Agent Starter
 
+## Autonomous V1 in this repository
+
+The existing Cloudflare chat remains the operational ROOT interface. A separate
+scheduled STRATEGIST reviews compact state in the same `ChatAgent` Durable Object,
+issues a typed directive, and ROOT forms a temporary team through the generic
+specialist runtime in `src/autonomy/`. RESEARCHER is the first supported tool-using
+role. It searches public pages and records retrieved URLs and snippets; it does
+not claim that search snippets prove customer demand or revenue.
+
+```bash
+npm install
+npm run check
+npm run test:autonomy
+npm run dev
+```
+
+`npm run deploy` builds and deploys when you choose to publish the changes.
+The manual local smoke test uses a running OpenClaw gateway and a token supplied
+through `OPENCLAW_GATEWAY_TOKEN` or `OPENCLAW_GATEWAY_TOKEN_FILE`:
+
+```bash
+OPENCLAW_GATEWAY_TOKEN_FILE=/path/to/local/token npx tsx scripts/smoke-autonomy.ts
+```
+
+Model routes are optional Worker variables: `STRATEGIST_MODEL`, `ROOT_MODEL`,
+`DEFAULT_WORKER_MODEL`, and `AUDITOR_MODEL`. Supported values are Workers AI
+model IDs beginning `@cf/` or OpenClaw agent IDs beginning `openclaw/`. The
+defaults are Workers AI for STRATEGIST and specialists, and `openclaw/default`
+for ROOT. To use a planning model such as Fable, configure it behind an OpenClaw
+agent and set `STRATEGIST_MODEL` to that agent ID. `STRATEGIST_REVIEW_MINUTES`
+sets the periodic review cadence (default 360, clamped to 60–1440). OpenClaw
+routes require the existing `OPENCLAW_BASE_URL` and `OPENCLAW_GATEWAY_TOKEN`
+Worker configuration; the latter must remain a secret. The existing `AI` and
+`ChatAgent` bindings are sufficient for this V1; web search uses public HTTPS
+requests, not a new paid Cloudflare binding.
+
+The loop is limited to two strategist calls and one mission per 24 hours, two
+specialists per mission, three tool calls and one model call per specialist,
+and a 60-minute review cooldown. Exact monetary cost is reported as unknown
+where the provider does not expose it. Human approval is represented as a
+structured gate; there is no autonomous spending, outreach, publication, or
+credential change. The admin status method is internal until an authenticated
+view is added.
+
 ![npm i agents command](./npm-agents-banner.svg)
 
 <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agents-starter"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare"/></a>
