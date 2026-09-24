@@ -229,6 +229,10 @@ export async function runRootMission(
     const specialists: SpecialistResult[] = settled.map((outcome, index) => {
       if (outcome.status === "fulfilled") return outcome.value;
       providerFailures.push("SPECIALIST_EXECUTION_FAILED");
+      const failureType =
+        outcome.reason instanceof z.ZodError
+          ? `INVALID_SPEC:${outcome.reason.issues.map((issue) => issue.path.join(".")).join(",")}`
+          : "EXECUTION_ERROR";
       return {
         agentId: specs[index].agentId,
         role: specs[index].role,
@@ -243,7 +247,7 @@ export async function runRootMission(
         unknowns: ["Task remains unresolved"],
         artifacts: [],
         recommendedNextAction: "Retry later",
-        limitations: ["Execution failed"],
+        limitations: [failureType],
         route: {
           requestedModel: "UNKNOWN",
           actualModel: "UNKNOWN",

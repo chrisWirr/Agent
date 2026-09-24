@@ -173,7 +173,21 @@ export async function spawnSpecialist(
       toolCalls,
       approximateCostUsd: null
     });
-  } catch {
+  } catch (error) {
+    const failureType =
+      error instanceof z.ZodError
+        ? `INVALID_OUTPUT:${error.issues.map((issue) => issue.path.join(".")).join(",")}`
+        : error instanceof SyntaxError
+          ? "INVALID_JSON"
+          : error instanceof Error &&
+              error.message === "Model did not return a JSON object"
+            ? "NO_JSON_OUTPUT"
+            : error instanceof Error &&
+                /^Search failed with HTTP \d+$/.test(error.message)
+              ? error.message
+              : error instanceof Error && error.name === "AbortError"
+                ? "TIMEOUT"
+                : "MODEL_OR_TOOL_FAILED";
     return specialistResultSchema.parse({
       agentId: spec.agentId,
       role: spec.role,
@@ -188,10 +202,7 @@ export async function spawnSpecialist(
       unknowns: ["Task remains unresolved"],
       artifacts: [],
       recommendedNextAction: "Retry later or choose another evidence path",
-      limitations: [
-        ...limitations,
-        "Specialist execution failed; inspect provider health"
-      ],
+      limitations: [...limitations, failureType],
       route,
       modelCalls,
       toolCalls,

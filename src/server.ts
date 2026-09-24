@@ -20,6 +20,12 @@ import {
   runStrategistReview
 } from "./autonomy/orchestrator";
 import { AutonomyStore } from "./autonomy/store";
+import {
+  readViaBridge,
+  searchPublicWeb,
+  searchViaBridge
+} from "./autonomy/research";
+import { directiveSchema } from "./autonomy/schemas";
 
 async function selectModel(env: Env) {
   const workersai = createWorkersAI({ binding: env.AI });
@@ -68,6 +74,17 @@ export class ChatAgent extends AIChatAgent<Env> {
       ? Math.max(60, Math.min(1440, configuredMinutes))
       : 360;
     await this.scheduleEvery(minutes * 60, "scheduledStrategistReview");
+    if (store.recentDirectives().length === 0) {
+      const failedBefore = Boolean(
+        store.latestEvent("STRATEGIST_REVIEW_FAILED")
+      );
+      await this.schedule(
+        failedBefore ? 180 : 10,
+        "scheduledStrategistReview",
+        "first-review",
+        { idempotent: true }
+      );
+    }
     this.mcp.configureOAuthCallback({
       customHandler: (result) => {
         if (result.authSuccess) {
@@ -114,12 +131,100 @@ export class ChatAgent extends AIChatAgent<Env> {
             modelCalls: missions[0].modelCalls,
             toolCalls: missions[0].toolCalls,
             actualCostUsd: missions[0].actualCostUsd,
+            evidenceCount: missions[0].evidence.length,
             evidence: missions[0].evidence.slice(0, 5),
-            humanGates: missions[0].humanGates
+            humanGates: missions[0].humanGates,
+            agentRuns: missions[0].agentRuns.map((run) => ({
+              role: run.role,
+              task: run.task,
+              status: run.status,
+              limitations: run.limitations,
+              modelCalls: run.modelCalls,
+              toolCalls: run.toolCalls,
+              route: run.route
+            }))
           }
         : null,
       recentEvents: store.recentEvents()
     };
+  }
+
+  async retryFailedResearchMission() {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const previous = store.recentMissions()[0];
+    const eligible =
+      previous &&
+      previous.evidence.length === 0 &&
+      previous.agentRuns.length > 0 &&
+      previous.agentRuns.every((run) =>
+        ["FAILED", "PARTIAL"].includes(run.status)
+      );
+    if (!eligible || store.currentMission())
+      return { started: false, reason: "NO_ELIGIBLE_FAILED_MISSION" };
+    if (
+      store.countEventsSince(
+        "MANUAL_RETRY",
+        Date.now() - 24 * 60 * 60 * 1000
+      ) >= 3
+    )
+      return { started: false, reason: "RETRY_LIMIT_REACHED" };
+    if (!store.tryAcquireReview())
+      return { started: false, reason: "REVIEW_IN_PROGRESS" };
+
+    let activeDirectiveId: string | null = null;
+    try {
+      const original = store
+        .recentDirectives()
+        .find((directive) => directive.directiveId === previous.directiveId);
+      if (!original) return { started: false, reason: "DIRECTIVE_NOT_FOUND" };
+      const directive = directiveSchema.parse({
+        ...original,
+        directiveId: crypto.randomUUID(),
+        decision: "ITERATE",
+        reason: "Technical retry after repairing public search",
+        createdAt: new Date().toISOString()
+      });
+      store.saveDirective(directive);
+      if (!store.tryStartMission(directive.directiveId))
+        return { started: false, reason: "DUPLICATE_MISSION" };
+      activeDirectiveId = directive.directiveId;
+      store.recordEvent("MANUAL_RETRY", { directiveId: directive.directiveId });
+      const result = await runRootMission(
+        directive,
+        {
+          runModel: createModelRunner(this.env),
+          search: (query) =>
+            searchViaBridge(
+              query,
+              this.env.OPENCLAW_BASE_URL,
+              this.env.OPENCLAW_GATEWAY_TOKEN
+            ),
+          readPage: (url) =>
+            readViaBridge(
+              url,
+              this.env.OPENCLAW_BASE_URL,
+              this.env.OPENCLAW_GATEWAY_TOKEN
+            )
+        },
+        DEFAULT_LIMITS,
+        (event, payload) => store.recordEvent(event, payload)
+      );
+      store.saveMission(result);
+      activeDirectiveId = null;
+      return {
+        started: true,
+        status: result.status,
+        evidenceCount: result.evidence.length,
+        specialistsUsed: result.specialistsUsed
+      };
+    } catch {
+      if (activeDirectiveId) store.failMission(activeDirectiveId);
+      store.recordEvent("MANUAL_RETRY_FAILED");
+      return { started: false, reason: "RETRY_FAILED" };
+    } finally {
+      store.releaseReview();
+    }
   }
 
   async scheduledStrategistReview() {
@@ -129,6 +234,7 @@ export class ChatAgent extends AIChatAgent<Env> {
     const now = Date.now();
     const dayAgo = now - 24 * 60 * 60 * 1000;
     const lastReview = store.latestEvent("STRATEGIST_REVIEW");
+    const lastFailure = store.latestEvent("STRATEGIST_REVIEW_FAILED");
     if (store.currentMission()) return;
     if (
       store.countEventsSince("STRATEGIST_REVIEW", dayAgo) >=
@@ -138,7 +244,11 @@ export class ChatAgent extends AIChatAgent<Env> {
     if (
       lastReview &&
       now - lastReview.created_at <
-        DEFAULT_LIMITS.reviewCooldownMinutes * 60 * 1000
+        (lastFailure && lastFailure.created_at >= lastReview.created_at
+          ? 2
+          : DEFAULT_LIMITS.reviewCooldownMinutes) *
+          60 *
+          1000
     )
       return;
     const lastDirective = store.recentDirectives()[0];
@@ -167,6 +277,14 @@ export class ChatAgent extends AIChatAgent<Env> {
       const summary = compactStateSummary({
         recentDirectives: store.recentDirectives(),
         recentMissions: previousMissions,
+        openOpportunities:
+          previousMissions.length === 0
+            ? [
+                "German HVAC subsidy and tender monitoring",
+                "German B2B regulatory change alerts",
+                "German small business automation services"
+              ]
+            : [],
         pendingHumanGates: previousMissions.reduce(
           (sum, mission) => sum + mission.humanGates.length,
           0
@@ -196,7 +314,21 @@ export class ChatAgent extends AIChatAgent<Env> {
       activeDirectiveId = directive.directiveId;
       const result = await runRootMission(
         directive,
-        { runModel: runner },
+        {
+          runModel: runner,
+          search: (query) =>
+            searchViaBridge(
+              query,
+              this.env.OPENCLAW_BASE_URL,
+              this.env.OPENCLAW_GATEWAY_TOKEN
+            ),
+          readPage: (url) =>
+            readViaBridge(
+              url,
+              this.env.OPENCLAW_BASE_URL,
+              this.env.OPENCLAW_GATEWAY_TOKEN
+            )
+        },
         DEFAULT_LIMITS,
         (event, payload) => store.recordEvent(event, payload)
       );
@@ -215,9 +347,25 @@ export class ChatAgent extends AIChatAgent<Env> {
         "mission-completed",
         { idempotent: true }
       );
-    } catch {
+    } catch (error) {
       if (activeDirectiveId) store.failMission(activeDirectiveId);
-      store.recordEvent("STRATEGIST_REVIEW_FAILED");
+      const failureType =
+        error instanceof z.ZodError
+          ? `SCHEMA:${error.issues.map((issue) => issue.path.join(".")).join(",")}`
+          : error instanceof SyntaxError
+            ? "INVALID_JSON"
+            : error instanceof Error &&
+                [
+                  "MODEL_REQUEST_FAILED",
+                  "Model did not return a JSON object"
+                ].includes(error.message)
+              ? error.message
+              : "UNKNOWN";
+      console.warn(`Strategist review failed: ${failureType}`);
+      store.recordEvent("STRATEGIST_REVIEW_FAILED", { failureType });
+      await this.schedule(120, "scheduledStrategistReview", "failed-review", {
+        idempotent: true
+      });
     } finally {
       store.releaseReview();
     }
@@ -408,6 +556,105 @@ If the user asks to schedule a task, use the schedule tool.
 
 export default {
   async fetch(request: Request, env: Env) {
+    const pathname = new URL(request.url).pathname;
+    if (pathname.startsWith("/admin/")) {
+      const token = request.headers
+        .get("authorization")
+        ?.replace(/^Bearer /i, "");
+      if (
+        !(
+          (request.method === "GET" &&
+            ["/admin/autonomy", "/admin/search-diagnostics"].includes(
+              pathname
+            )) ||
+          (request.method === "POST" && pathname === "/admin/retry-research")
+        ) ||
+        !env.AUTONOMY_ADMIN_TOKEN ||
+        token !== env.AUTONOMY_ADMIN_TOKEN
+      ) {
+        return new Response("Not found", { status: 404 });
+      }
+      if (pathname === "/admin/autonomy") {
+        const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
+        const status = await stub.getAutonomyStatus();
+        return Response.json(status, {
+          headers: { "cache-control": "no-store" }
+        });
+      }
+      if (pathname === "/admin/retry-research") {
+        const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
+        const result = await stub.retryFailedResearchMission();
+        return Response.json(result, {
+          headers: { "cache-control": "no-store" }
+        });
+      }
+      if (pathname === "/admin/search-diagnostics") {
+        const query =
+          new URL(request.url).searchParams.get("q")?.slice(0, 160) ||
+          "Fördermittel Monitoring Handwerker Software Preis";
+        const targets = {
+          ddg: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`,
+          brave: `https://search.brave.com/search?q=${encodeURIComponent(query)}`,
+          bing: `https://www.bing.com/search?format=rss&q=${encodeURIComponent(query)}`,
+          google: `https://www.google.com/search?q=${encodeURIComponent(query)}`
+        };
+        const results = await Promise.all(
+          Object.entries(targets).map(async ([name, url]) => {
+            try {
+              const response = await fetch(url, {
+                headers: { "user-agent": "Mozilla/5.0" },
+                signal: AbortSignal.timeout(8000)
+              });
+              const body = (await response.text()).slice(0, 120000);
+              return {
+                name,
+                status: response.status,
+                bytes: body.length,
+                ddgResults: (body.match(/result-link/g) ?? []).length,
+                bingResults: (body.match(/<item>/g) ?? []).length,
+                title: body
+                  .match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+                  ?.slice(0, 120),
+                links:
+                  name === "brave"
+                    ? [...body.matchAll(/<a[^>]+href=["']([^"']+)["'][^>]*>/gi)]
+                        .map((match) => match[1])
+                        .filter((link) => link.startsWith("http"))
+                        .slice(0, 12)
+                    : undefined,
+                resultMarkers:
+                  name === "brave"
+                    ? (
+                        body.match(
+                          /result-header|result-title|snippet-content|data-type="web"/g
+                        ) ?? []
+                      ).length
+                    : undefined
+              };
+            } catch (error) {
+              return {
+                name,
+                failure: error instanceof Error ? error.name : "UNKNOWN"
+              };
+            }
+          })
+        );
+        const parsedHits = await searchPublicWeb(query).catch(() => []);
+        return Response.json(
+          {
+            targets: results,
+            parsedHits: parsedHits.map((hit) => ({
+              title: hit.title,
+              sourceUrl: hit.sourceUrl
+            }))
+          },
+          {
+            headers: { "cache-control": "no-store" }
+          }
+        );
+      }
+      return new Response("Not found", { status: 404 });
+    }
     return (
       (await routeAgentRequest(request, env)) ||
       new Response("Not found", {

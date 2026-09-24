@@ -8,7 +8,7 @@ import {
   runStrategistReview,
   DEFAULT_LIMITS
 } from "./orchestrator";
-import { searchPublicWeb } from "./research";
+import { readViaBridge, searchPublicWeb, searchViaBridge } from "./research";
 import { spawnSpecialist, type ModelRunner } from "./runtime";
 import {
   directiveSchema,
@@ -379,11 +379,60 @@ test("mission execution is idempotent in Durable Object SQL", () => {
 });
 
 test("public search creates evidence only from retrieved search results", async () => {
-  const response = new Response(
-    '<a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fsource" class="result-link">Example</a><td class="result-snippet">Public finding</td>',
-    { headers: { "content-type": "text/html" } }
+  const hits = await searchPublicWeb(
+    "test",
+    async () =>
+      new Response(
+        '<a href="https://example.org/source"><div>Example</div></a>'
+      )
   );
-  const hits = await searchPublicWeb("test", async () => response);
   assert.equal(hits.length, 1);
   assert.equal(hits[0].sourceUrl, "https://example.org/source");
+  assert.equal(hits[0].observation.includes("test"), true);
+});
+
+test("public search falls back when primary search is blocked", async () => {
+  let calls = 0;
+  const hits = await searchPublicWeb("test", async () => {
+    calls++;
+    return calls === 1
+      ? new Response("blocked", { status: 429 })
+      : new Response(
+          '<a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fsource" class="result-link">Example</a><td class="result-snippet">Public finding</td>'
+        );
+  });
+  assert.equal(calls, 2);
+  assert.equal(hits[0].sourceUrl, "https://example.org/source");
+});
+
+test("authenticated bridge search and page reading preserve retrieved evidence", async () => {
+  const evidence = {
+    sourceUrl: "https://example.org/source",
+    title: "Example",
+    observation: "Public finding",
+    retrievedAt: new Date().toISOString()
+  };
+  const seen: string[] = [];
+  const fetcher = async (input: RequestInfo | URL, options?: RequestInit) => {
+    seen.push(String(input));
+    assert.equal(options?.headers && "authorization" in options.headers, true);
+    return Response.json(
+      String(input).includes("/research/search") ? [evidence] : evidence
+    );
+  };
+  const hits = await searchViaBridge(
+    "test",
+    "https://bridge.example.org",
+    "secret",
+    fetcher
+  );
+  const page = await readViaBridge(
+    evidence.sourceUrl,
+    "https://bridge.example.org",
+    "secret",
+    fetcher
+  );
+  assert.equal(hits[0].sourceUrl, evidence.sourceUrl);
+  assert.equal(page?.observation, evidence.observation);
+  assert.equal(seen.length, 2);
 });

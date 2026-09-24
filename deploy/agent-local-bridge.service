@@ -1,0 +1,17 @@
+[Unit]
+Description=ROOT local OpenClaw and research bridge
+After=network-online.target openclaw-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/linu/Dokumente/agent
+Environment=OPENCLAW_GATEWAY_TOKEN_FILE=/home/linu/.config/openclaw-bridge/gateway-token
+Environment=PATH=/home/linu/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:/usr/bin:/bin
+ExecStart=/home/linu/Dokumente/agent/node_modules/.bin/tsx /home/linu/Dokumente/agent/scripts/local-bridge.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

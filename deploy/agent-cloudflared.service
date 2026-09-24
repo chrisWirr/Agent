@@ -1,0 +1,15 @@
+[Unit]
+Description=ROOT Cloudflare Tunnel with Worker address synchronization
+After=network-online.target agent-local-bridge.service
+Wants=network-online.target agent-local-bridge.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/linu/Dokumente/agent
+ExecStart=/home/linu/Dokumente/agent/scripts/cloudflared-worker-bridge.sh
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

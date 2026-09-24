@@ -1,4 +1,4 @@
-# Agent Starter
+# ROOT Agent
 
 ## Autonomous V1 in this repository
 
@@ -28,21 +28,46 @@ Model routes are optional Worker variables: `STRATEGIST_MODEL`, `ROOT_MODEL`,
 `DEFAULT_WORKER_MODEL`, and `AUDITOR_MODEL`. Supported values are Workers AI
 model IDs beginning `@cf/` or OpenClaw agent IDs beginning `openclaw/`. The
 defaults are Workers AI for STRATEGIST and specialists, and `openclaw/default`
-for ROOT. To use a planning model such as Fable, configure it behind an OpenClaw
-agent and set `STRATEGIST_MODEL` to that agent ID. `STRATEGIST_REVIEW_MINUTES`
+for ROOT. This deployment sets STRATEGIST and specialists to `openclaw/default`
+as well. The current OpenClaw default is AgentRouter's `deepseek-v4-flash`;
+a separate Fable planning route has not been configured. To use Fable,
+configure it behind an OpenClaw agent and set `STRATEGIST_MODEL` to that agent ID.
+`STRATEGIST_REVIEW_MINUTES`
 sets the periodic review cadence (default 360, clamped to 60–1440). OpenClaw
 routes require the existing `OPENCLAW_BASE_URL` and `OPENCLAW_GATEWAY_TOKEN`
-Worker configuration; the latter must remain a secret. The existing `AI` and
-`ChatAgent` bindings are sufficient for this V1; web search uses public HTTPS
-requests, not a new paid Cloudflare binding.
+Worker configuration; both are Wrangler secrets in this deployment. The existing
+`AI` and `ChatAgent` bindings are sufficient for this V1. Web search uses public
+HTTPS requests through the authenticated local bridge, with direct Worker fetch
+as fallback; it does not require a paid Cloudflare search binding.
+
+### Running the deployed agent
+
+The Cloudflare Worker stays deployed independently. On the Linux host, these
+user services provide the model gateway and the authenticated research bridge:
+
+```bash
+systemctl --user start openclaw-gateway.service agent-local-bridge.service agent-cloudflared.service
+systemctl --user status openclaw-gateway.service agent-local-bridge.service agent-cloudflared.service
+```
+
+All three services are enabled for automatic startup. `loginctl enable-linger`
+keeps the user services running after logout. The Cloudflare Quick Tunnel gets
+a new URL when restarted; `agent-cloudflared.service` automatically updates the
+Worker's `OPENCLAW_BASE_URL` secret. The bridge uses the local gateway token
+file and requires it as a Bearer token for `/v1/*` and `/research/*`. No token
+belongs in Git. Quick Tunnels have no uptime guarantee; a named tunnel is the
+durable production replacement.
+
+The authenticated `/admin/autonomy` endpoint shows the latest decision,
+mission, evidence count, and specialist runs. `/admin/retry-research` can
+manually rerun an empty-evidence research mission at most three times per day.
 
 The loop is limited to two strategist calls and one mission per 24 hours, two
 specialists per mission, three tool calls and one model call per specialist,
 and a 60-minute review cooldown. Exact monetary cost is reported as unknown
 where the provider does not expose it. Human approval is represented as a
 structured gate; there is no autonomous spending, outreach, publication, or
-credential change. The admin status method is internal until an authenticated
-view is added.
+credential change.
 
 ![npm i agents command](./npm-agents-banner.svg)
 

@@ -6,4 +6,5 @@ interface Env {
   DEFAULT_WORKER_MODEL?: string;
   AUDITOR_MODEL?: string;
   STRATEGIST_REVIEW_MINUTES?: string;
+  AUTONOMY_ADMIN_TOKEN?: string;
 }
