@@ -3,17 +3,13 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { AutonomyStore } from "./store";
 import {
+  compactStateSummary,
   parseRootPlan,
   runRootMission,
   runStrategistReview,
   DEFAULT_LIMITS
 } from "./orchestrator";
-import {
-  readPublicPage,
-  readViaBridge,
-  searchPublicWeb,
-  searchViaBridge
-} from "./research";
+import { readViaBridge, searchPublicWeb, searchViaBridge } from "./research";
 import { spawnSpecialist, type ModelRunner } from "./runtime";
 import {
   directiveSchema,
@@ -22,6 +18,7 @@ import {
   type Directive,
   type Route
 } from "./schemas";
+import { ARTIST_BRIEF, MUSIC_PROGRAM_ID } from "../music/project";
 
 test("ROOT plan normalization accepts verbose model output without widening permissions", () => {
   const plan = parseRootPlan(
@@ -32,8 +29,8 @@ test("ROOT plan normalization accepts verbose model output without widening perm
           role: "RESEARCHER",
           task: "x".repeat(1400),
           searchQuery: [
-            "site:freelancermap.de/projekt CSV Produktdaten",
-            "CSV Datenpflege"
+            "site:reddit.com/r/soul original singer discussion",
+            "alternative soul audience discussion"
           ],
           reasonForDelegation: "Needs retrieval",
           expectedValueOfDelegation: "Public evidence",
@@ -47,7 +44,7 @@ test("ROOT plan normalization accepts verbose model output without widening perm
   assert.equal(plan.specialists[0].task.length, 1200);
   assert.equal(
     plan.specialists[0].searchQuery,
-    "site:freelancermap.de/projekt CSV Produktdaten"
+    "site:reddit.com/r/soul original singer discussion"
   );
   assert.equal(plan.directFindings.length, 6);
   assert.deepEqual(plan.humanGates, []);
@@ -82,16 +79,18 @@ const unknownRoute: Route = {
 
 const directive: Directive = directiveSchema.parse({
   directiveId: "d1",
+  programId: MUSIC_PROGRAM_ID,
   decision: "NEW_MISSION",
-  objective: "Find evidence for a narrow German B2B information service",
-  reason: "Demand is unknown",
-  successCriteria: ["Public demand evidence"],
+  objective:
+    "Explore how alternative-soul listeners describe memorable choruses",
+  reason: "The artist's first song needs an audience-informed reference point",
+  successCriteria: ["Public discussion evidence"],
   constraints: ["No contact"],
   priority: 2,
   maxBudgetUsd: 0,
   timeLimitMinutes: 5,
-  requiredEvidence: ["Public source"],
-  deliverable: "Evidence summary",
+  requiredEvidence: ["Public listener discussion"],
+  deliverable: "Listening and writing brief",
   createdAt: new Date().toISOString()
 });
 
@@ -128,6 +127,7 @@ test("Strategist can choose WAIT without creating a mission", async () => {
   });
   const result = await runStrategistReview("{}", runner);
   assert.equal(result.directive.decision, "WAIT");
+  assert.equal(result.directive.programId, MUSIC_PROGRAM_ID);
 });
 
 test("RESEARCHER uses only allowed tools and preserves real source URLs", async () => {
@@ -136,8 +136,8 @@ test("RESEARCHER uses only allowed tools and preserves real source URLs", async 
     {
       agentId: "a1",
       role: "RESEARCHER",
-      objective: "Assess demand",
-      task: "German HVAC subsidy alerts",
+      objective: "Research independent soul audiences",
+      task: "Find public listener discussions",
       context: "",
       allowedTools: ["webSearch"],
       maxModelCalls: 1,
@@ -189,9 +189,9 @@ test("RESEARCHER counts read pages as evidence, not search leads", async () => {
     {
       agentId: "reader",
       role: "RESEARCHER",
-      objective: "Verify public demand",
+      objective: "Verify public listener feedback",
       task: "Read original sources",
-      searchQuery: "site:example.org CSV job",
+      searchQuery: "site:example.org soul discussion",
       context: "",
       allowedTools: ["webSearch", "readPage"],
       maxModelCalls: 1,
@@ -230,34 +230,10 @@ test("RESEARCHER counts read pages as evidence, not search leads", async () => {
   assert.deepEqual(result.observedEvidence, []);
 });
 
-test("public project reader extracts the actual description and stated budget", async () => {
-  const sourceUrl = "https://www.freelancermap.de/projekt/example";
-  const embedded = JSON.stringify({
-    project: {
-      title: "CSV Produktdaten bereinigen",
-      description: "<p>Wir suchen Hilfe für unseren Shop.</p>",
-      created: "2026-09-01T12:00:00+02:00",
-      budget: { amountInCents: 300000, currency: { code: "EUR" } }
-    }
-  });
-  const response = new Response(
-    `<html><script data-component-name="ProjectShow" type="application/json">${embedded}</script></html>`,
-    { headers: { "content-type": "text/html" } }
-  );
-  Object.defineProperty(response, "url", { value: sourceUrl });
-  const page = await readPublicPage(
-    sourceUrl,
-    (async () => response) as typeof fetch
-  );
-  assert.match(page?.observation ?? "", /3000 EUR/);
-  assert.match(page?.observation ?? "", /Wir suchen Hilfe/);
-  assert.doesNotMatch(page?.observation ?? "", /<p>/);
-});
-
 test("invalid role permissions and delegation depth fail safely", async () => {
   const base = {
     agentId: "a1",
-    role: "AUDITOR",
+    role: "AUDITOR" as const,
     objective: "Audit",
     task: "Review",
     context: "",
@@ -329,7 +305,7 @@ test("ROOT can spawn RESEARCHER and consolidate observed evidence", async () => 
             specialists: [
               {
                 role: "RESEARCHER",
-                task: "German HVAC subsidy alerts",
+                task: "Find listener discussions about memorable choruses",
                 reasonForDelegation: "Needs public evidence",
                 expectedValueOfDelegation: "Demand signal",
                 allowedTools: ["webSearch"]
@@ -339,7 +315,7 @@ test("ROOT can spawn RESEARCHER and consolidate observed evidence", async () => 
             humanGates: []
           })
         : JSON.stringify({
-            summary: "One source found",
+            summary: "One listener discussion found",
             inferences: [],
             assumptions: [],
             unknowns: [],
@@ -364,6 +340,299 @@ test("ROOT can spawn RESEARCHER and consolidate observed evidence", async () => 
   assert.equal(result.evidence.length, 1);
   assert.equal(result.modelCalls, 2);
   assert.equal(result.actualCostUsd, null);
+});
+
+test("music mission produces a draft and keeps legacy missions out of the new workspace", async () => {
+  const musicDirective = directiveSchema.parse({
+    ...directive,
+    directiveId: "music-first-song",
+    objective: "Draft an original first song for the singer",
+    requiredEvidence: [],
+    deliverable: "Lyric and topline draft"
+  });
+  const lyric =
+    "Verse: I left the porch light on for who I used to be.\nChorus: I can be broken and still be free.\nTopline: sparse verse, rising minor-key chorus.";
+  const runModel: ModelRunner = async (role) => ({
+    text:
+      role === "ROOT"
+        ? JSON.stringify({
+            approach: "Make a first text draft for review",
+            specialists: [
+              {
+                role: "SONGWRITER",
+                task: "Write an original first-song lyric and topline note",
+                reasonForDelegation: "Needs a concrete creative draft",
+                expectedValueOfDelegation: "A reviewable song concept",
+                allowedTools: []
+              }
+            ],
+            directFindings: [],
+            humanGates: [
+              {
+                proposedAction: "Publish this draft",
+                reason: "A future release step",
+                expectedBenefit: "Audience feedback",
+                risk: "Premature release",
+                exactApprovalNeeded: "Approve publication"
+              }
+            ]
+          })
+        : JSON.stringify({
+            summary: "A first song draft is ready for artistic review",
+            artifacts: [lyric],
+            inferences: [],
+            assumptions: [],
+            unknowns: ["No recording or listening test exists"],
+            recommendedNextAction: "Review the chorus with piano",
+            limitations: ["Text draft only"]
+          }),
+    route: unknownRoute
+  });
+  const result = await runRootMission(musicDirective, { runModel });
+  assert.equal(result.status, "COMPLETED");
+  assert.deepEqual(result.humanGates, []);
+  assert.equal(result.agentRuns[0].artifacts[0], lyric);
+  assert.equal(result.evidence.length, 0);
+
+  const db = new DatabaseSync(":memory:");
+  const sql = <T>(
+    strings: TemplateStringsArray,
+    ...values: (string | number | boolean | null)[]
+  ) => {
+    const query = strings.reduce(
+      (output, part, index) =>
+        output + part + (index < values.length ? "?" : ""),
+      ""
+    );
+    return db
+      .prepare(query)
+      .all(
+        ...values.map((value) =>
+          typeof value === "boolean" ? Number(value) : value
+        )
+      ) as T[];
+  };
+  const store = new AutonomyStore(sql);
+  store.initialize();
+  store.saveDirective({
+    ...musicDirective,
+    directiveId: "old-business",
+    programId: undefined
+  });
+  assert.equal(store.tryStartMission("old-business"), true);
+  store.saveMission({
+    ...result,
+    missionId: "old-mission",
+    directiveId: "old-business"
+  });
+  store.saveDirective(musicDirective);
+  assert.deepEqual(
+    store.recentDirectives().map((item) => item.directiveId),
+    [musicDirective.directiveId]
+  );
+  assert.equal(store.tryStartMission(musicDirective.directiveId), true);
+  store.saveMission(result);
+  store.saveMission(result);
+  const artifacts = store.recentMusicArtifacts();
+  assert.equal(artifacts.length, 1);
+  assert.equal(artifacts[0].kind, "SONG_DRAFT");
+  assert.equal(artifacts[0].status, "DRAFT");
+  assert.equal(artifacts[0].content, lyric);
+  assert.equal(store.recentMissions().length, 1);
+  const summary = compactStateSummary({
+    recentDirectives: store.recentDirectives(),
+    recentMissions: store.recentMissions(),
+    pendingHumanGates: 0,
+    recentEvents: store.recentMusicEvents(),
+    musicArtifacts: artifacts
+  });
+  assert.match(summary, /Alternative soul/);
+  assert.match(summary, /SONG_DRAFT/);
+  assert.doesNotMatch(summary, /old-business|realized net profit/i);
+  assert.equal(ARTIST_BRIEF.language, "English");
+  db.close();
+});
+
+test("artistic reviewer receives the songwriter draft in the same mission", async () => {
+  const musicDirective = directiveSchema.parse({
+    ...directive,
+    directiveId: "music-review-chain",
+    objective: "Draft and review a first chorus",
+    requiredEvidence: []
+  });
+  let reviewerSawDraft = false;
+  const result = await runRootMission(musicDirective, {
+    runModel: async (role, prompt) => {
+      if (role === "ROOT")
+        return {
+          text: JSON.stringify({
+            approach: "Draft then review",
+            specialists: [
+              {
+                role: "SONGWRITER",
+                task: "Write the chorus",
+                reasonForDelegation: "Original writing",
+                expectedValueOfDelegation: "Draft",
+                allowedTools: []
+              },
+              {
+                role: "AUDITOR",
+                task: "Review the chorus",
+                reasonForDelegation: "Independent review",
+                expectedValueOfDelegation: "Review",
+                allowedTools: []
+              }
+            ],
+            directFindings: [],
+            humanGates: []
+          }),
+          route: unknownRoute
+        };
+      if (role === "AUDITOR")
+        reviewerSawDraft = prompt.includes("Original chorus");
+      return {
+        text: JSON.stringify({
+          summary: "Draft reviewed",
+          artifacts: [
+            role === "AUDITOR"
+              ? "Review: chorus is specific"
+              : "Original chorus"
+          ],
+          inferences: [],
+          assumptions: [],
+          unknowns: [],
+          recommendedNextAction: "Continue",
+          limitations: []
+        }),
+        route: unknownRoute
+      };
+    }
+  });
+  assert.equal(reviewerSawDraft, true);
+  assert.equal(result.status, "COMPLETED");
+  assert.equal(result.agentRuns.length, 2);
+});
+
+test("music creation cannot complete from research evidence alone", async () => {
+  const creativeDirective = directiveSchema.parse({
+    ...directive,
+    directiveId: "creative-without-draft",
+    objective: "Write a first song draft",
+    requiredEvidence: []
+  });
+  const result = await runRootMission(creativeDirective, {
+    runModel: async (role) => ({
+      text:
+        role === "ROOT"
+          ? JSON.stringify({
+              approach: "Read public context first",
+              specialists: [
+                {
+                  role: "RESEARCHER",
+                  task: "Find a public soul discussion",
+                  reasonForDelegation: "Gather context",
+                  expectedValueOfDelegation: "One source",
+                  allowedTools: ["webSearch"]
+                }
+              ],
+              directFindings: [],
+              humanGates: []
+            })
+          : JSON.stringify({
+              summary: "Found a discussion",
+              artifacts: [],
+              inferences: [],
+              assumptions: [],
+              unknowns: [],
+              recommendedNextAction: "Draft a chorus",
+              limitations: []
+            }),
+      route: unknownRoute
+    }),
+    search: async () => [
+      {
+        sourceUrl: "https://example.org/soul-discussion",
+        title: "Public discussion",
+        observation: "Listeners discuss emotional choruses",
+        retrievedAt: new Date().toISOString()
+      }
+    ]
+  });
+  assert.equal(result.evidence.length, 1);
+  assert.equal(result.status, "PARTIAL");
+});
+
+test("a creative summary without a draft remains partial", async () => {
+  const result = await spawnSpecialist(
+    {
+      agentId: "songwriter-1",
+      role: "SONGWRITER",
+      objective: "Draft first song",
+      task: "Write an original chorus",
+      context: "",
+      allowedTools: [],
+      maxModelCalls: 1,
+      maxToolCalls: 0,
+      timeoutMs: 5000,
+      maxBudgetUsd: 0,
+      parentMissionId: "m1",
+      delegationDepth: 2,
+      reasonForDelegation: "Need a draft",
+      expectedValueOfDelegation: "Reviewable chorus"
+    },
+    {
+      runModel: async () => ({
+        text: JSON.stringify({
+          summary: "A chorus could work",
+          artifacts: [],
+          inferences: [],
+          assumptions: [],
+          unknowns: [],
+          recommendedNextAction: "Write it",
+          limitations: []
+        }),
+        route: unknownRoute
+      })
+    }
+  );
+  assert.equal(result.status, "PARTIAL");
+});
+
+test("structured creative drafts are retained as artifacts", async () => {
+  const result = await spawnSpecialist(
+    {
+      agentId: "songwriter-structured",
+      role: "SONGWRITER",
+      objective: "Draft first song",
+      task: "Write an original chorus",
+      context: "",
+      allowedTools: [],
+      maxModelCalls: 1,
+      maxToolCalls: 0,
+      timeoutMs: 5000,
+      maxBudgetUsd: 0,
+      parentMissionId: "m1",
+      delegationDepth: 2,
+      reasonForDelegation: "Need a draft",
+      expectedValueOfDelegation: "Reviewable chorus"
+    },
+    {
+      runModel: async () => ({
+        text: JSON.stringify({
+          summary: "Original chorus drafted",
+          artifacts: [{ title: "First Song", chorus: "An original lyric" }],
+          inferences: [],
+          assumptions: [],
+          unknowns: [],
+          recommendedNextAction: "Review draft",
+          limitations: []
+        }),
+        route: unknownRoute
+      })
+    }
+  );
+  assert.equal(result.status, "COMPLETED");
+  assert.match(result.artifacts[0], /An original lyric/);
 });
 
 test("ROOT retries one malformed plan without an unbounded loop", async () => {
@@ -418,11 +687,11 @@ test("ROOT specialist cap, failure handling and human gates", async () => {
         directFindings: [],
         humanGates: [
           {
-            proposedAction: "Contact customers",
-            reason: "Validate demand",
-            expectedBenefit: "Evidence",
-            risk: "Unwanted outreach",
-            exactApprovalNeeded: "Approve specific message and recipients"
+            proposedAction: "Publish a song teaser",
+            reason: "Get real audience feedback",
+            expectedBenefit: "Listener response",
+            risk: "Unreviewed public release",
+            exactApprovalNeeded: "Approve the exact recording, artwork and post"
           }
         ]
       }),

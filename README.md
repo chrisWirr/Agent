@@ -1,13 +1,18 @@
-# ROOT Agent
+# ROOT Musikprojekt
 
-## Autonomous V1 in this repository
+Dieses Repository steuert ein originelles englischsprachiges Sängerinnenprojekt. Die vorläufige künstlerische Richtung ist Alternative Soul mit Hip-Hop-/Trap-Einflüssen: eine warme, raue und emotional starke Stimme, konkrete und manchmal bissige Texte sowie Songs mit einem Refrain, der auch nur mit Klavier oder Gitarre trägt. Ein Künstlername steht noch nicht fest. Die Referenzen beschreiben Eigenschaften; Texte, Melodien, Stimme und Bildsprache sollen eigenständig sein.
 
-The existing Cloudflare chat remains the operational ROOT interface. A separate
-scheduled STRATEGIST reviews compact state in the same `ChatAgent` Durable Object,
-issues a typed directive, and ROOT forms a temporary team through the generic
-specialist runtime in `src/autonomy/`. RESEARCHER is the first supported tool-using
-role. It searches public pages and records retrieved URLs and snippets; it does
-not claim that search snippets prove customer demand or revenue.
+## Stand des Systems
+
+- Der Cloudflare Worker bleibt Chat-Oberfläche und Laufzeit für ROOT. Ein geplanter STRATEGIST wählt kleine künstlerische Schritte; ROOT delegiert höchstens zwei Spezialisten pro Mission.
+- Unterstützte Textrollen: `SONGWRITER`, `PRODUCER`, `VOCAL_DIRECTOR`, `A_AND_R`, `ART_DIRECTOR`, `RELEASE_PLANNER`, `AUDITOR` und `RESEARCHER`. Nur `RESEARCHER` hat öffentliche Web-Recherchewerkzeuge. Andere Rollen erzeugen Textentwürfe und Arbeitsanweisungen.
+- Künstlerprofil und Produktionsprinzipien stehen in `src/music/project.ts`. Entwürfe werden als `DRAFT` in der SQLite-Datenbank des Durable Object gespeichert. Der geschützte Endpunkt `/admin/music` zeigt Profil, Entwürfe und aktuelle Entscheidungen.
+- Alte Wirtschafts-Missionen bleiben als Historie gespeichert, werden aber für die neue Musikinitiative nicht als aktuelle Strategiedaten verwendet.
+- Audioerzeugung, echtes Hören/Abnehmen, Bilddateien, Vertrieb, Promotion und Kostenbuchung sind noch nicht angeschlossen. Ein Textentwurf wird nicht als fertiger Song ausgegeben. Veröffentlichung, Uploads, Zahlungen und externe Kontakte brauchen eine konkrete menschliche Freigabe.
+
+Der geplante Ablauf ist: Künstleridentität und Songbrief → Originalsong/Topline → Produktion und Gesang → unabhängige künstlerische Prüfung → Release-Vorschlag → Publikumsfeedback und nächste Entscheidung.
+
+## Lokal prüfen
 
 ```bash
 npm install
@@ -16,299 +21,25 @@ npm run test:autonomy
 npm run dev
 ```
 
-`npm run deploy` builds and deploys when you choose to publish the changes.
-The manual local smoke test uses a running OpenClaw gateway and a token supplied
-through `OPENCLAW_GATEWAY_TOKEN` or `OPENCLAW_GATEWAY_TOKEN_FILE`:
+Der lokale Smoke-Test nutzt ein laufendes OpenClaw-Gateway und einen lokal bereitgestellten Token, der nicht in Git gehört:
 
 ```bash
 OPENCLAW_GATEWAY_TOKEN_FILE=/path/to/local/token npx tsx scripts/smoke-autonomy.ts
 ```
 
-Model routes are optional Worker variables: `STRATEGIST_MODEL`, `ROOT_MODEL`,
-`DEFAULT_WORKER_MODEL`, and `AUDITOR_MODEL`. Supported values are Workers AI
-model IDs beginning `@cf/` or OpenClaw agent IDs beginning `openclaw/`. The
-defaults are Workers AI for STRATEGIST and specialists, and `openclaw/default`
-for ROOT. This deployment sets STRATEGIST and specialists to `openclaw/default`
-as well. The current OpenClaw default is AgentRouter's `deepseek-v4-flash`;
-a separate Fable planning route has not been configured. To use Fable,
-configure it behind an OpenClaw agent and set `STRATEGIST_MODEL` to that agent ID.
-`STRATEGIST_REVIEW_MINUTES`
-sets the periodic review cadence (default 360, clamped to 60–1440). OpenClaw
-routes require the existing `OPENCLAW_BASE_URL` and `OPENCLAW_GATEWAY_TOKEN`
-Worker configuration; both are Wrangler secrets in this deployment. The existing
-`AI` and `ChatAgent` bindings are sufficient for this V1. Web search uses public
-HTTPS requests through the authenticated local bridge, with direct Worker fetch
-as fallback; it does not require a paid Cloudflare search binding.
+## Laufzeit und Modelle
 
-### Running the deployed agent
+`wrangler.jsonc` routet STRATEGIST nach `openclaw/strategist` und ROOT sowie andere Rollen nach `openclaw/main`; bei einer nicht verfügbaren Brücke fällt die Anwendung auf Workers AI zurück. `STRATEGIST_REVIEW_MINUTES` bestimmt den Abstand der Reviews (Standard: 360 Minuten). Die Grenzwerte sind zwei Strategieaufrufe und eine Mission pro 24 Stunden, höchstens zwei Spezialisten pro Mission und eine Modellantwort pro Spezialist.
 
-The Cloudflare Worker stays deployed independently. On the Linux host, these
-user services provide the model gateway and the authenticated research bridge:
+Auf dem Linux-Rechner versorgen diese User-Services die Brücke und das Gateway:
 
 ```bash
 systemctl --user start openclaw-gateway.service agent-local-bridge.service agent-cloudflared.service
 systemctl --user status openclaw-gateway.service agent-local-bridge.service agent-cloudflared.service
 ```
 
-All three services are enabled for automatic startup. `loginctl enable-linger`
-keeps the user services running after logout. The Cloudflare Quick Tunnel gets
-a new URL when restarted; `agent-cloudflared.service` automatically updates the
-Worker's `OPENCLAW_BASE_URL` secret. The bridge uses the local gateway token
-file and requires it as a Bearer token for `/v1/*` and `/research/*`. No token
-belongs in Git. Quick Tunnels have no uptime guarantee; a named tunnel is the
-durable production replacement.
+Die Cloudflare-Quick-Tunnel-Adresse ändert sich nach Neustarts und muss im Worker-Secret `OPENCLAW_BASE_URL` aktualisiert werden. Dafür braucht Wrangler eine gültige Cloudflare-Anmeldung. Zugangsdaten gehören ausschließlich in lokale Dateien oder Worker-Secrets.
 
-The authenticated `/admin/autonomy` endpoint shows the latest decision,
-mission, evidence count, and specialist runs. `/admin/retry-research` can
-manually rerun an empty-evidence research mission at most three times per day.
+Der geschützte Endpunkt `/admin/autonomy` zeigt die aktuelle Mission und deren technischen Status; `/admin/music` zeigt zusätzlich die Textentwürfe. Das separat angelegte Google-Apps-Script `scripts/google-status-mail.gs` kann Statusmails verschicken, sobald der vorhandene Admin-Token als private Skripteigenschaft eingetragen und der Trigger autorisiert wurde.
 
-The loop is limited to two strategist calls and one mission per 24 hours, two
-specialists per mission, three tool calls and one model call per specialist,
-and a 60-minute review cooldown. Exact monetary cost is reported as unknown
-where the provider does not expose it. Human approval is represented as a
-structured gate; there is no autonomous spending, outreach, publication, or
-credential change.
-
-![npm i agents command](./npm-agents-banner.svg)
-
-<a href="https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agents-starter"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare"/></a>
-
-A starter template for building AI chat agents on Cloudflare, powered by the [Agents SDK](https://developers.cloudflare.com/agents/).
-
-Uses Workers AI (no API key required), with tools for weather, timezone detection, calculations with approval, task scheduling, and vision (image input).
-
-## Quick start
-
-```bash
-npx create-cloudflare@latest --template cloudflare/agents-starter
-cd agents-starter
-npm install
-npm run dev
-```
-
-> **Cloudflare authentication is required to run locally.** This template uses
-> Workers AI with `"ai": { "remote": true }` in `wrangler.jsonc`, and Workers AI
-> has no local simulator — so `npm run dev` opens a remote proxy session against
-> Cloudflare and needs you to be authenticated. Either run `wrangler login` once
-> in an interactive terminal, or set a `CLOUDFLARE_API_TOKEN` environment
-> variable (e.g. in a `.env` file). No third-party (OpenAI/Anthropic) key is
-> needed, but a Cloudflare login is.
-
-Open [http://localhost:5173](http://localhost:5173) to see your agent in action.
-
-Try these prompts to see the different features:
-
-- **"What's the weather in Paris?"** — server-side tool (runs automatically)
-- **"What timezone am I in?"** — client-side tool (browser provides the answer)
-- **"Calculate 5000 \* 3"** — approval tool (asks you before running)
-- **"Remind me in 5 minutes to take a break"** — scheduling
-- **Drop an image and ask "What's in this image?"** — vision (image understanding)
-
-## Project structure
-
-```
-src/
-  server.ts    # Chat agent with tools and scheduling
-  app.tsx      # Chat UI built with Kumo components
-  client.tsx   # React entry point
-  styles.css   # Tailwind + Kumo styles
-```
-
-## What's included
-
-- **AI Chat** — Streaming responses powered by Workers AI via `AIChatAgent`
-- **Image input** — Drag-and-drop, paste, or click to attach images for vision-capable models
-- **Three tool patterns** — server-side auto-execute, client-side (browser), and human-in-the-loop approval
-- **Scheduling** — one-time, delayed, and recurring (cron) tasks
-- **Reasoning display** — shows model thinking as it streams, collapses when done
-- **Debug mode** — toggle in the header to inspect raw message JSON for each message
-- **Kumo UI** — Cloudflare's design system with dark/light mode
-- **Real-time** — WebSocket connection with automatic reconnection and message persistence
-
-## Making it your own
-
-### Name your project
-
-Update the name in `package.json` and `wrangler.jsonc` — the `name` in `wrangler.jsonc` becomes your deployed Worker's URL (`<name>.<subdomain>.workers.dev`).
-
-### Change the system prompt
-
-Edit the `system` string in `server.ts` to give your agent a different personality or focus area. This is the most impactful single change you can make.
-
-### Replace the demo tools with real ones
-
-The starter ships with demo tools (`getWeather` returns random data, `calculate` does basic arithmetic). Replace them with real implementations:
-
-```ts
-// In server.ts, replace a demo tool with a real API call:
-getWeather: tool({
-  description: "Get the current weather for a city",
-  inputSchema: z.object({ city: z.string() }),
-  execute: async ({ city }) => {
-    const res = await fetch(`https://api.weather.example/${city}`);
-    return res.json();
-  }
-}),
-```
-
-### Add your own tools
-
-Add new tools to the `tools` object in `server.ts`. There are three patterns:
-
-```ts
-// Auto-execute: runs on the server, no user interaction
-myTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  execute: async (input) => { /* return result */ }
-}),
-
-// Client-side: no execute function, browser provides the result
-// Handle it in app.tsx via the onToolCall callback
-browserTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ })
-}),
-
-// Approval: add needsApproval to gate execution
-sensitiveTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  needsApproval: async (input) => true, // or conditional logic
-  execute: async (input) => { /* runs after approval */ }
-}),
-```
-
-### Customize scheduled task behavior
-
-When a scheduled task fires, `executeTask` runs on the server. It does its work and then uses `this.broadcast()` to notify connected clients (shown as a toast notification in the UI). Replace it with your own logic:
-
-```ts
-async executeTask(description: string, task: Schedule<string>) {
-  // Do the actual work
-  await sendEmail({ to: "user@example.com", subject: description });
-
-  // Notify connected clients
-  this.broadcast(
-    JSON.stringify({ type: "scheduled-task", description, timestamp: new Date().toISOString() })
-  );
-}
-```
-
-> **Why `broadcast()` instead of `saveMessages()`?** Injecting into chat history can cause the AI to see the notification as new context and re-trigger the same task in a loop. `broadcast()` sends a one-off event that the client displays separately from the conversation.
-
-### Remove scheduling
-
-If you don't need scheduling, remove `scheduleTask`, `getScheduledTasks`, and `cancelScheduledTask` from the tools object, the `executeTask` method, and the schedule-related imports (`getSchedulePrompt`, `scheduleSchema`, `Schedule`).
-
-### Add state beyond chat messages
-
-Use `this.setState()` and `this.state` for real-time state that syncs to all connected clients. See [Store and sync state](https://developers.cloudflare.com/agents/api-reference/store-and-sync-state/).
-
-### Add callable methods
-
-Expose agent methods as typed RPC that your client can call directly:
-
-```ts
-import { callable } from "agents";
-
-export class ChatAgent extends AIChatAgent<Env> {
-  @callable()
-  async getStats() {
-    return { messageCount: this.messages.length };
-  }
-}
-
-// Client-side:
-const stats = await agent.call("getStats");
-```
-
-See [Callable methods](https://developers.cloudflare.com/agents/api-reference/callable-methods/).
-
-### Connect to MCP servers
-
-Add external tools from MCP servers:
-
-```ts
-async onChatMessage(onFinish, options) {
-  // Connect to an MCP server
-  await this.mcp.connect("https://my-mcp-server.example/sse");
-
-  const result = streamText({
-    // ...
-    tools: {
-      ...myTools,
-      ...this.mcp.getAITools() // Include MCP tools
-    }
-  });
-}
-```
-
-See [MCP Client API](https://developers.cloudflare.com/agents/api-reference/mcp-client-api/).
-
-## Use a different AI model provider
-
-The starter uses [Workers AI](https://developers.cloudflare.com/workers-ai/) by default (no API key needed). To use a different provider:
-
-### OpenAI
-
-```bash
-npm install @ai-sdk/openai
-```
-
-```ts
-// In server.ts, replace the model:
-import { openai } from "@ai-sdk/openai";
-
-// Inside onChatMessage:
-const result = streamText({
-  model: openai("gpt-5.2")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
-
-```
-OPENAI_API_KEY=your-key-here
-```
-
-### Anthropic
-
-```bash
-npm install @ai-sdk/anthropic
-```
-
-```ts
-import { anthropic } from "@ai-sdk/anthropic";
-
-const result = streamText({
-  model: anthropic("claude-sonnet-4-20250514")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
-
-```
-ANTHROPIC_API_KEY=your-key-here
-```
-
-## Deploy
-
-```bash
-npm run deploy
-```
-
-Your agent is live on Cloudflare's global network. Messages persist in SQLite, streams resume on disconnect, and the agent hibernates when idle.
-
-## Learn more
-
-- [Agents SDK documentation](https://developers.cloudflare.com/agents/)
-- [Build a chat agent tutorial](https://developers.cloudflare.com/agents/getting-started/build-a-chat-agent/)
-- [Chat agents API reference](https://developers.cloudflare.com/agents/api-reference/chat-agents/)
-- [Workers AI models](https://developers.cloudflare.com/workers-ai/models/)
-
-## License
-
-MIT
+Eine neue Cloudflare-Version entsteht mit `npm run deploy`. Ein lokaler Commit allein verändert den bereits veröffentlichten Worker nicht.

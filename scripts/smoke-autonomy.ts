@@ -8,6 +8,7 @@ import {
 } from "../src/autonomy/orchestrator";
 import type { ModelRunner } from "../src/autonomy/runtime";
 import { directiveSchema } from "../src/autonomy/schemas";
+import { MUSIC_PROGRAM_ID } from "../src/music/project";
 
 const token =
   process.env.OPENCLAW_GATEWAY_TOKEN ||
@@ -47,44 +48,38 @@ const summary = compactStateSummary({
   recentDirectives: [],
   recentMissions: [],
   pendingHumanGates: 0,
-  recentEvents: [
-    "NO_VALIDATED_OPPORTUNITY",
-    "NO_REVENUE",
-    "WEB_EVIDENCE_MISSING"
-  ],
-  openOpportunities: [
-    "German HVAC subsidy and tender monitoring",
-    "German B2B regulatory change alerts",
-    "German small business automation services"
-  ]
+  recentEvents: [],
+  musicArtifacts: []
 });
-const { directive } = await runStrategistReview(summary, runModel);
-console.log(
-  JSON.stringify({
-    decision: directive.decision,
-    objective: directive.objective
-  })
-);
+const strategistResult =
+  process.env.SMOKE_USE_FIXTURE === "1"
+    ? null
+    : await runStrategistReview(summary, runModel);
+const directive = strategistResult?.directive;
+if (directive)
+  console.log(
+    JSON.stringify({
+      decision: directive.decision,
+      objective: directive.objective
+    })
+  );
 const useFixture =
-  directive.decision === "WAIT" || directive.decision === "KILL";
+  !directive || directive.decision === "WAIT" || directive.decision === "KILL";
 const missionDirective = useFixture
   ? directiveSchema.parse({
       directiveId: crypto.randomUUID(),
+      programId: MUSIC_PROGRAM_ID,
       createdAt: new Date().toISOString(),
       decision: "NEW_MISSION",
-      objective:
-        "Compare public evidence of demand and willingness to pay for German small-business regulatory change alerts and HVAC subsidy monitoring.",
-      reason: "Safe test fixture; no opportunity has been validated",
-      successCriteria: [
-        "Find public demand signals",
-        "Find competitors or public pricing"
-      ],
-      constraints: ["No contact", "No spending", "No publication"],
+      objective: "Draft the singer's first original song concept and chorus.",
+      reason: "Safe text-only fixture for the music project",
+      successCriteria: ["Original lyric draft", "Chorus works with piano"],
+      constraints: ["No imitation", "No spending", "No publication"],
       priority: 2,
-      maxBudgetUsd: 1,
+      maxBudgetUsd: 0,
       timeLimitMinutes: 20,
-      requiredEvidence: ["Public URLs supporting or contradicting demand"],
-      deliverable: "Evidence-based comparison and unknowns"
+      requiredEvidence: [],
+      deliverable: "Text-only lyric and topline draft"
     })
   : directive;
 const result = await runRootMission(missionDirective, { runModel });
@@ -94,6 +89,13 @@ console.log(
     status: result.status,
     specialistsUsed: result.specialistsUsed,
     evidenceCount: result.evidence.length,
+    draftCount: result.agentRuns.flatMap((run) => run.artifacts).length,
+    specialists: result.agentRuns.map((run) => ({
+      role: run.role,
+      status: run.status,
+      limitations: run.limitations
+    })),
+    humanGates: result.humanGates.map((gate) => gate.proposedAction),
     sources: result.evidence.map((item) => item.sourceUrl).slice(0, 6),
     modelCalls: result.modelCalls,
     toolCalls: result.toolCalls,

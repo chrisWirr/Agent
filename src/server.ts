@@ -26,6 +26,7 @@ import {
   searchViaBridge
 } from "./autonomy/research";
 import { directiveSchema } from "./autonomy/schemas";
+import { ARTIST_BRIEF, MUSIC_PROGRAM_ID } from "./music/project";
 
 async function selectModel(env: Env) {
   const workersai = createWorkersAI({ binding: env.AI });
@@ -76,7 +77,7 @@ export class ChatAgent extends AIChatAgent<Env> {
     await this.scheduleEvery(minutes * 60, "scheduledStrategistReview");
     if (store.recentDirectives().length === 0) {
       const failedBefore = Boolean(
-        store.latestEvent("STRATEGIST_REVIEW_FAILED")
+        store.latestEvent("MUSIC_STRATEGIST_REVIEW_FAILED")
       );
       await this.schedule(
         failedBefore ? 180 : 10,
@@ -121,6 +122,7 @@ export class ChatAgent extends AIChatAgent<Env> {
     const directives = store.recentDirectives();
     const missions = store.recentMissions();
     return {
+      programId: MUSIC_PROGRAM_ID,
       lastDecision: directives[0]?.decision ?? "NONE",
       currentMission: store.currentMission(),
       lastMission: missions[0]
@@ -147,12 +149,35 @@ export class ChatAgent extends AIChatAgent<Env> {
             }))
           }
         : null,
-      recentEvents: store.recentEvents()
+      recentEvents: store.recentMusicEvents(),
+      musicDrafts: store
+        .recentMusicArtifacts()
+        .slice(0, 5)
+        .map((item) => ({
+          id: item.id,
+          kind: item.kind,
+          title: item.title,
+          status: item.status
+        }))
+    };
+  }
+
+  getMusicWorkspace() {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    return {
+      programId: MUSIC_PROGRAM_ID,
+      artistBrief: ARTIST_BRIEF,
+      drafts: store.recentMusicArtifacts(),
+      lastDirective: store.recentDirectives()[0] ?? null,
+      lastMission: store.recentMissions()[0] ?? null
     };
   }
 
   async queueExternalDirective(input: unknown) {
     const directive = directiveSchema.parse(input);
+    if (directive.programId !== MUSIC_PROGRAM_ID)
+      return { queued: false, reason: "WRONG_PROGRAM" };
     if (directive.decision === "WAIT" || directive.decision === "KILL")
       return { queued: false, reason: "NO_MISSION_REQUESTED" };
     const store = new AutonomyStore(this.sql.bind(this));
@@ -204,7 +229,7 @@ export class ChatAgent extends AIChatAgent<Env> {
       return;
     }
     const directive = store.getDirective(directiveId);
-    if (!directive) return;
+    if (!directive || directive.programId !== MUSIC_PROGRAM_ID) return;
     if (store.currentMission() || !store.tryAcquireReview()) {
       await this.schedule(120, "scheduledExternalDirective", directiveId, {
         idempotent: true
@@ -292,7 +317,8 @@ export class ChatAgent extends AIChatAgent<Env> {
     )
       return { queued: false, reason: "NO_FAILED_EXTERNAL_MISSION" };
     const original = store.getDirective(originalId);
-    if (!original) return { queued: false, reason: "DIRECTIVE_NOT_FOUND" };
+    if (!original || original.programId !== MUSIC_PROGRAM_ID)
+      return { queued: false, reason: "DIRECTIVE_NOT_FOUND" };
     const directive = directiveSchema.parse({
       ...original,
       directiveId: crypto.randomUUID(),
@@ -353,7 +379,7 @@ export class ChatAgent extends AIChatAgent<Env> {
         ...original,
         directiveId: crypto.randomUUID(),
         decision: "ITERATE",
-        reason: "Technical retry after repairing public search",
+        reason: "Technical retry of music-project research",
         createdAt: new Date().toISOString()
       });
       store.saveDirective(directive);
@@ -404,11 +430,11 @@ export class ChatAgent extends AIChatAgent<Env> {
     store.expireStaleMissions(35 * 60 * 1000);
     const now = Date.now();
     const dayAgo = now - 24 * 60 * 60 * 1000;
-    const lastReview = store.latestEvent("STRATEGIST_REVIEW");
-    const lastFailure = store.latestEvent("STRATEGIST_REVIEW_FAILED");
+    const lastReview = store.latestEvent("MUSIC_STRATEGIST_REVIEW");
+    const lastFailure = store.latestEvent("MUSIC_STRATEGIST_REVIEW_FAILED");
     if (store.currentMission()) return;
     if (
-      store.countEventsSince("STRATEGIST_REVIEW", dayAgo) >=
+      store.countEventsSince("MUSIC_STRATEGIST_REVIEW", dayAgo) >=
       DEFAULT_LIMITS.maxStrategistCallsPerDay
     )
       return;
@@ -422,45 +448,23 @@ export class ChatAgent extends AIChatAgent<Env> {
           1000
     )
       return;
-    const lastDirective = store.recentDirectives()[0];
-    if (
-      lastDirective?.decision === "WAIT" &&
-      !store
-        .eventsAfter(lastReview?.created_at ?? 0)
-        .some((event) =>
-          [
-            "MISSION_COMPLETED",
-            "MISSION_FAILED",
-            "HUMAN_GATE_RESOLVED",
-            "EVIDENCE_RECORDED",
-            "REVENUE_RECORDED",
-            "PROVIDER_RECOVERED"
-          ].includes(event.kind)
-        )
-    )
-      return;
     if (!store.tryAcquireReview()) return;
 
     let activeDirectiveId: string | null = null;
     try {
-      store.recordEvent("STRATEGIST_REVIEW");
+      store.recordEvent("MUSIC_STRATEGIST_REVIEW", {
+        programId: MUSIC_PROGRAM_ID
+      });
       const previousMissions = store.recentMissions();
       const summary = compactStateSummary({
         recentDirectives: store.recentDirectives(),
         recentMissions: previousMissions,
-        openOpportunities:
-          previousMissions.length === 0
-            ? [
-                "German HVAC subsidy and tender monitoring",
-                "German B2B regulatory change alerts",
-                "German small business automation services"
-              ]
-            : [],
+        musicArtifacts: store.recentMusicArtifacts(),
         pendingHumanGates: previousMissions.reduce(
           (sum, mission) => sum + mission.humanGates.length,
           0
         ),
-        recentEvents: store.recentEvents()
+        recentEvents: store.recentMusicEvents()
       });
       const runner = createModelRunner(this.env);
       const { directive, route } = await runStrategistReview(summary, runner);
@@ -473,7 +477,7 @@ export class ChatAgent extends AIChatAgent<Env> {
       if (directive.decision === "WAIT" || directive.decision === "KILL")
         return;
       if (
-        store.countEventsSince("MISSION_STARTED", dayAgo) >=
+        store.countEventsSince("MUSIC_MISSION_STARTED", dayAgo) >=
         DEFAULT_LIMITS.maxMissionsPerDay
       ) {
         store.recordEvent("BUDGET_LIMIT_REACHED", {
@@ -533,7 +537,10 @@ export class ChatAgent extends AIChatAgent<Env> {
               ? error.message
               : "UNKNOWN";
       console.warn(`Strategist review failed: ${failureType}`);
-      store.recordEvent("STRATEGIST_REVIEW_FAILED", { failureType });
+      store.recordEvent("MUSIC_STRATEGIST_REVIEW_FAILED", {
+        failureType,
+        programId: MUSIC_PROGRAM_ID
+      });
       await this.schedule(120, "scheduledStrategistReview", "failed-review", {
         idempotent: true
       });
@@ -549,12 +556,11 @@ export class ChatAgent extends AIChatAgent<Env> {
       model: await selectModel(this.env),
 
       system: `
-You are ROOT, the operational orchestrator for a bounded economic agent system.
-STRATEGIST decides what matters and why. You decide how to execute a directive, which evidence is needed, whether a temporary specialist is worth its cost, and how to verify its result.
-The goal is lawful sustainable REALIZED NET PROFIT: money received or contractually secured minus attributable costs. Do not count traffic, followers, activity, or estimated revenue as profit.
-Prefer cheap falsifiable experiments, short feedback loops, reusable assets, and verified external evidence. Separate observations from inferences and never invent customers, prices, URLs, revenue, or tool results.
-Do not spend money, contact people, publish, create external accounts, sign contracts, access sensitive data, change credentials, or make destructive changes without a human gate. State the proposed action and exact approval needed, then continue safe work where possible.
-Your autonomous missions are executed by the separate mission runtime. This chat remains available for conversation and the existing tools.
+You are ROOT, the coordinator of an original English-language singer project. STRATEGIST chooses the next artistic priority; you turn it into reviewable work by specialist agents. The direction is alternative soul with a warm, rough-edged and emotionally powerful female voice, candid writing, and hip-hop/trap rhythms.
+Keep the artist's identity coherent across songs. Every song needs a clear emotional statement, a distinctive original line and a chorus that works with piano or guitar alone. Treat references as qualities to learn from, never as a real artist to impersonate, a voice to clone, or lyrics or melody to copy.
+Separate drafted lyrics, production plans and artwork briefs from actual recordings or finished artwork. Never claim to have listened to audio or completed a release without evidence. Preserve versions, review findings and open questions in the music workspace. Do not spend money, contact people, publish, upload, distribute, create external accounts, change credentials or make destructive changes without a specific human gate.
+Autonomous missions run in the separate mission runtime. This chat remains available for conversation and existing tools.
+Artist brief: ${JSON.stringify(ARTIST_BRIEF)}
 
 ${getSchedulePrompt({ date: new Date() })}
 
@@ -569,69 +575,6 @@ If the user asks to schedule a task, use the schedule tool.
 
       tools: {
         ...mcpTools,
-
-        getWeather: tool({
-          description: "Get the current weather for a city",
-          inputSchema: z.object({
-            city: z.string().describe("City name")
-          }),
-          execute: async ({ city }) => {
-            const conditions = ["sunny", "cloudy", "rainy", "snowy"];
-
-            const temp = Math.floor(Math.random() * 30) + 5;
-
-            return {
-              city,
-              temperature: temp,
-              condition:
-                conditions[Math.floor(Math.random() * conditions.length)],
-              unit: "celsius"
-            };
-          }
-        }),
-
-        getUserTimezone: tool({
-          description: "Get the user's timezone from their browser.",
-          inputSchema: jsonSchema<Record<string, never>>({
-            type: "object",
-            properties: {},
-            required: [],
-            additionalProperties: false
-          })
-        }),
-
-        calculate: tool({
-          description: "Perform a math calculation with two numbers.",
-          inputSchema: z.object({
-            a: z.number(),
-            b: z.number(),
-            operator: z.enum(["+", "-", "*", "/", "%"])
-          }),
-
-          needsApproval: async ({ a, b }) =>
-            Math.abs(a) > 1000 || Math.abs(b) > 1000,
-
-          execute: async ({ a, b, operator }) => {
-            const ops: Record<string, (x: number, y: number) => number> = {
-              "+": (x, y) => x + y,
-              "-": (x, y) => x - y,
-              "*": (x, y) => x * y,
-              "/": (x, y) => x / y,
-              "%": (x, y) => x % y
-            };
-
-            if (operator === "/" && b === 0) {
-              return {
-                error: "Division by zero"
-              };
-            }
-
-            return {
-              expression: `${a} ${operator} ${b}`,
-              result: ops[operator](a, b)
-            };
-          }
-        }),
 
         scheduleTask: tool({
           description: "Schedule a task to execute later.",
@@ -737,6 +680,7 @@ export default {
           (request.method === "GET" &&
             [
               "/admin/autonomy",
+              "/admin/music",
               "/admin/bridge-health",
               "/admin/search-diagnostics"
             ].includes(pathname)) ||
@@ -756,6 +700,12 @@ export default {
         const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
         const status = await stub.getAutonomyStatus();
         return Response.json(status, {
+          headers: { "cache-control": "no-store" }
+        });
+      }
+      if (pathname === "/admin/music") {
+        const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
+        return Response.json(await stub.getMusicWorkspace(), {
           headers: { "cache-control": "no-store" }
         });
       }
@@ -819,7 +769,7 @@ export default {
       if (pathname === "/admin/search-diagnostics") {
         const query =
           new URL(request.url).searchParams.get("q")?.slice(0, 160) ||
-          "Fördermittel Monitoring Handwerker Software Preis";
+          "independent alternative soul music audience research";
         const targets = {
           ddg: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`,
           brave: `https://search.brave.com/search?q=${encodeURIComponent(query)}`,

@@ -360,18 +360,7 @@ function Chat() {
     status
   } = useAgentChat({
     agent,
-    experimental_throttle: 100,
-    onToolCall: async ({ toolCall, addToolOutput }) => {
-      if (toolCall.toolName === "getUserTimezone") {
-        addToolOutput({
-          toolCallId: toolCall.toolCallId,
-          output: {
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            localTime: new Date().toLocaleTimeString()
-          }
-        });
-      }
-    }
+    experimental_throttle: 100
   });
 
   const isStreaming = status === "streaming" || status === "submitted";
@@ -488,7 +477,7 @@ function Chat() {
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h1 className="text-lg font-semibold text-kumo-default">
-              <span className="mr-2">⛅</span>Agent Starter
+              <span className="mr-2">🎙️</span>ROOT Music Studio
             </h1>
             <Badge variant="secondary">
               <ChatCircleDotsIcon size={12} weight="bold" className="mr-1" />
@@ -700,30 +689,36 @@ function Chat() {
           {messages.length === 0 && (
             <Empty
               icon={<ChatCircleDotsIcon size={32} />}
-              title="Start a conversation"
+              title="Build the artist, one song at a time"
               contents={
-                <div className="flex flex-wrap justify-center gap-2">
-                  {[
-                    "What's the weather in Paris?",
-                    "What timezone am I in?",
-                    "Calculate 5000 * 3",
-                    "Remind me in 5 minutes to take a break"
-                  ].map((prompt) => (
-                    <Button
-                      key={prompt}
-                      variant="outline"
-                      size="sm"
-                      disabled={isStreaming}
-                      onClick={() => {
-                        sendMessage({
-                          role: "user",
-                          parts: [{ type: "text", text: prompt }]
-                        });
-                      }}
-                    >
-                      {prompt}
-                    </Button>
-                  ))}
+                <div className="space-y-4 text-center">
+                  <Text size="sm" variant="secondary">
+                    Original alternative soul with hip-hop rhythm, honest
+                    lyrics, and a voice that can move from intimacy to power.
+                  </Text>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {[
+                      "Define the artist's voice and story",
+                      "Shape a first song around one emotional truth",
+                      "Critique this chorus before production",
+                      "Plan a release only after the song is reviewed"
+                    ].map((prompt) => (
+                      <Button
+                        key={prompt}
+                        variant="outline"
+                        size="sm"
+                        disabled={isStreaming}
+                        onClick={() => {
+                          sendMessage({
+                            role: "user",
+                            parts: [{ type: "text", text: prompt }]
+                          });
+                        }}
+                      >
+                        {prompt}
+                      </Button>
+                    ))}
+                  </div>
                 </div>
               }
             />

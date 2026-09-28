@@ -79,6 +79,7 @@ function checkRootStatusLocked() {
             mission.status,
             mission.summary,
             mission.evidenceCount,
+            (status.musicDrafts || []).map((draft) => draft.id),
             mission.modelCalls,
             mission.toolCalls
           ])
@@ -180,9 +181,16 @@ function statusBody(status, lead) {
   const mission = status.lastMission || null;
   const lines = [
     lead,
+    `Projekt: ${status.programId || "unbekannt"}`,
     `Strategieentscheidung: ${status.lastDecision || "unbekannt"}`,
     `Aktive Aufgabe: ${status.currentMission ? "ja" : "nein"}`
   ];
+  const drafts = status.musicDrafts || [];
+  lines.push(`Gespeicherte Musikentwürfe: ${drafts.length}`);
+  if (drafts.length)
+    lines.push(
+      `Neuester Entwurf: ${String(drafts[0].kind || "Entwurf")} – ${String(drafts[0].title || "").slice(0, 160)}`
+    );
   if (mission) {
     lines.push(`Letzte Aufgabe: ${mission.status}`);
     lines.push(`Ergebnis: ${String(mission.summary || "").slice(0, 1800)}`);

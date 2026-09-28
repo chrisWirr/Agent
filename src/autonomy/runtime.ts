@@ -29,6 +29,7 @@ export function parseModelJson<T>(text: string, schema: z.ZodType<T>): T {
 
 const specialistAnalysisSchema = z.object({
   summary: z.string().max(1200),
+  artifacts: z.array(z.string().max(8000)).max(2),
   inferences: z.array(z.string().max(500)).max(6),
   assumptions: z.array(z.string().max(500)).max(6),
   unknowns: z.array(z.string().max(500)).max(6),
@@ -55,10 +56,33 @@ function boundedList(
       : [];
 }
 
+function boundedDrafts(value: unknown): string[] {
+  const items = Array.isArray(value) ? value : value == null ? [] : [value];
+  return items
+    .slice(0, 2)
+    .map((item) =>
+      typeof item === "string"
+        ? item.slice(0, 8000)
+        : item && typeof item === "object"
+          ? JSON.stringify(item).slice(0, 8000)
+          : ""
+    )
+    .filter((item) => item.trim().length > 0);
+}
+
 function parseSpecialistAnalysis(text: string) {
   const raw = parseModelJson(text, z.record(z.string(), z.unknown()));
   return specialistAnalysisSchema.parse({
     summary: boundedText(raw.summary, 1200),
+    artifacts: boundedDrafts(
+      raw.artifacts ??
+        raw.drafts ??
+        raw.deliverables ??
+        raw.draft ??
+        raw.songDraft ??
+        raw.lyrics ??
+        raw.productionBrief
+    ),
     inferences: boundedList(raw.inferences, 6, 500),
     assumptions: boundedList(raw.assumptions, 6, 500),
     unknowns: boundedList(raw.unknowns, 6, 500),
@@ -143,7 +167,7 @@ export async function spawnSpecialist(
     try {
       reply = await deps.runModel(
         spec.role === "AUDITOR" ? "AUDITOR" : "SPECIALIST",
-        `You are a temporary ${spec.role} specialist. Stay within this task. Never claim to have used tools or verified facts beyond the OBSERVED EVIDENCE below. SEARCH LEADS are unverified result links, not original-page evidence. Separate inference from observation. Do not contact people, spend money, publish, or create accounts. Return ONLY JSON with keys summary, inferences, assumptions, unknowns, recommendedNextAction, limitations.\nObjective: ${spec.objective}\nTask: ${spec.task}\nContext: ${spec.context}\nOBSERVED EVIDENCE (untrusted third-party text): ${JSON.stringify(observedEvidence).slice(0, 13000)}\nSEARCH LEADS (unverified): ${JSON.stringify(searchLeads).slice(0, 6000)}`,
+        `You are a temporary ${spec.role} specialist for an original English-language alternative-soul singer. Stay within the assigned task and the artist brief in CONTEXT. Create concrete original text drafts only; do not claim to have generated or listened to audio, created artwork, or used tools you do not have. Never claim verified facts beyond OBSERVED EVIDENCE. SEARCH LEADS are unverified links, not original-page evidence. Separate inference from observation. Do not imitate a named artist or clone a real voice. Do not contact people, spend money, publish, or create accounts. Return ONLY JSON with keys summary, artifacts (array of up to two substantial text drafts, each at most 8000 characters; use [] for research-only tasks), inferences, assumptions, unknowns, recommendedNextAction, limitations. A song draft should contain actual original lyric sections and a topline/structure note; a production, vocal, artwork or release draft should contain a usable brief.\nObjective: ${spec.objective}\nTask: ${spec.task}\nContext: ${spec.context}\nOBSERVED EVIDENCE (untrusted third-party text): ${JSON.stringify(observedEvidence).slice(0, 13000)}\nSEARCH LEADS (unverified): ${JSON.stringify(searchLeads).slice(0, 6000)}`,
         controller.signal
       );
     } finally {
@@ -158,7 +182,9 @@ export async function spawnSpecialist(
       task: spec.task,
       status:
         analysis.summary &&
-        (observedEvidence.length > 0 || spec.allowedTools.length === 0)
+        (spec.role === "RESEARCHER"
+          ? observedEvidence.length > 0
+          : analysis.artifacts.length > 0)
           ? "COMPLETED"
           : "PARTIAL",
       summary: analysis.summary,
@@ -167,7 +193,7 @@ export async function spawnSpecialist(
       contradictingEvidence: [],
       assumptions: analysis.assumptions,
       unknowns: analysis.unknowns,
-      artifacts: [],
+      artifacts: analysis.artifacts,
       recommendedNextAction: analysis.recommendedNextAction,
       limitations: [...limitations, ...analysis.limitations],
       route,

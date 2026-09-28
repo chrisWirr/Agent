@@ -1,4 +1,5 @@
 import type { Directive, MissionResult } from "./schemas";
+import { MUSIC_PROGRAM_ID, musicArtifactKind } from "../music/project";
 
 type Sql = <T = Record<string, string | number | boolean | null>>(
   strings: TemplateStringsArray,
@@ -12,6 +13,15 @@ type EntryRow = {
   status: string;
 };
 type EventRow = { kind: string; payload: string; created_at: number };
+export type MusicArtifact = {
+  id: string;
+  mission_id: string;
+  kind: string;
+  title: string;
+  content: string;
+  status: "DRAFT";
+  created_at: number;
+};
 
 export class AutonomyStore {
   constructor(private readonly sql: Sql) {}
@@ -29,6 +39,15 @@ export class AutonomyStore {
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
       payload TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )`;
+    this.sql`CREATE TABLE IF NOT EXISTS music_artifacts (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      status TEXT NOT NULL,
       created_at INTEGER NOT NULL
     )`;
     this
@@ -78,6 +97,28 @@ export class AutonomyStore {
       ORDER BY created_at DESC LIMIT 10`.map((row) => row.kind);
   }
 
+  recentMusicEvents(): string[] {
+    return this
+      .sql<EventRow>`SELECT kind, payload, created_at FROM autonomy_events
+      ORDER BY created_at DESC LIMIT 100`
+      .filter((row) => {
+        if (row.kind.startsWith("MUSIC_")) return true;
+        try {
+          const payload: unknown = JSON.parse(row.payload);
+          return (
+            payload !== null &&
+            typeof payload === "object" &&
+            "programId" in payload &&
+            payload.programId === MUSIC_PROGRAM_ID
+          );
+        } catch {
+          return false;
+        }
+      })
+      .slice(0, 10)
+      .map((row) => row.kind);
+  }
+
   tryAcquireReview(): boolean {
     const staleBefore = Date.now() - 30 * 60 * 1000;
     this
@@ -103,7 +144,8 @@ export class AutonomyStore {
       VALUES (${directive.directiveId}, 'directive', ${directive.decision}, ${JSON.stringify(directive)}, ${now}, ${now})`;
     this.recordEvent("DIRECTIVE_CREATED", {
       directiveId: directive.directiveId,
-      decision: directive.decision
+      decision: directive.decision,
+      programId: directive.programId
     });
   }
 
@@ -123,13 +165,19 @@ export class AutonomyStore {
     const created =
       (this.sql<{ count: number }>`SELECT changes() AS count`[0]?.count ??
         0) === 1;
-    if (created) this.recordEvent("MISSION_STARTED", { directiveId });
+    if (created) {
+      const programId = this.getDirective(directiveId)?.programId;
+      this.recordEvent("MISSION_STARTED", { directiveId, programId });
+      if (programId === MUSIC_PROGRAM_ID)
+        this.recordEvent("MUSIC_MISSION_STARTED", { directiveId, programId });
+    }
     return created;
   }
 
   saveMission(result: MissionResult) {
     const id = `mission:${result.directiveId}`;
     const now = Date.now();
+    const programId = this.getDirective(result.directiveId)?.programId;
     this.sql`UPDATE autonomy_entries SET status = ${result.status},
       payload = ${JSON.stringify(result)}, updated_at = ${now} WHERE id = ${id}`;
     this.recordEvent(
@@ -137,31 +185,56 @@ export class AutonomyStore {
       {
         directiveId: result.directiveId,
         missionId: result.missionId,
-        status: result.status
+        status: result.status,
+        programId
       }
     );
     if (result.humanGates.length > 0) {
       this.recordEvent("HUMAN_GATE_CREATED", {
         missionId: result.missionId,
-        count: result.humanGates.length
+        count: result.humanGates.length,
+        programId
       });
     }
+    if (programId === MUSIC_PROGRAM_ID) {
+      for (const run of result.agentRuns) {
+        const kind = musicArtifactKind(run.role);
+        if (!kind || run.status === "FAILED") continue;
+        run.artifacts.slice(0, 2).forEach((content, index) => {
+          const artifactId = `${result.missionId}:${run.agentId}:${index}`;
+          this.sql`INSERT OR IGNORE INTO music_artifacts
+            (id, mission_id, kind, title, content, status, created_at)
+            VALUES (${artifactId}, ${result.missionId}, ${kind}, ${run.task.slice(0, 160)}, ${content.slice(0, 8000)}, 'DRAFT', ${now})`;
+        });
+      }
+    }
+  }
+
+  recentMusicArtifacts(): MusicArtifact[] {
+    return this
+      .sql<MusicArtifact>`SELECT id, mission_id, kind, title, content, status, created_at
+      FROM music_artifacts ORDER BY created_at DESC LIMIT 20`;
   }
 
   recentDirectives(): Directive[] {
     return this
       .sql<EntryRow>`SELECT id, payload, created_at, status FROM autonomy_entries
-      WHERE kind = 'directive' ORDER BY created_at DESC LIMIT 5`.map(
-      (row) => JSON.parse(row.payload) as Directive
-    );
+      WHERE kind = 'directive' ORDER BY created_at DESC LIMIT 100`
+      .map((row) => JSON.parse(row.payload) as Directive)
+      .filter((directive) => directive.programId === MUSIC_PROGRAM_ID)
+      .slice(0, 5);
   }
 
   recentMissions(): MissionResult[] {
     return this
       .sql<EntryRow>`SELECT id, payload, created_at, status FROM autonomy_entries
-      WHERE kind = 'mission' AND status != 'RUNNING' ORDER BY created_at DESC LIMIT 5`.map(
-      (row) => JSON.parse(row.payload) as MissionResult
-    );
+      WHERE kind = 'mission' AND status != 'RUNNING' ORDER BY created_at DESC LIMIT 100`
+      .map((row) => JSON.parse(row.payload) as MissionResult)
+      .filter(
+        (mission) =>
+          this.getDirective(mission.directiveId)?.programId === MUSIC_PROGRAM_ID
+      )
+      .slice(0, 5);
   }
 
   currentMission(): { directiveId: string; status: string } | null {

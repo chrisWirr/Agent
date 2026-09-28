@@ -9,6 +9,7 @@ import {
   type SpecialistResult
 } from "./schemas";
 import { z } from "zod";
+import { ARTIST_BRIEF, MUSIC_PROGRAM_ID } from "../music/project";
 import {
   parseModelJson,
   spawnSpecialist,
@@ -100,13 +101,28 @@ export function compactStateSummary(input: {
   recentMissions: MissionResult[];
   pendingHumanGates: number;
   recentEvents: string[];
-  openOpportunities?: string[];
+  musicArtifacts?: {
+    kind: string;
+    title: string;
+    status: string;
+    content: string;
+  }[];
 }): string {
   return JSON.stringify({
-    objective: "Find lawful opportunities for sustainable realized net profit",
-    realizedRevenueUsd: null,
-    actualCostUsd: null,
-    openOpportunities: (input.openOpportunities ?? []).slice(0, 6),
+    programId: MUSIC_PROGRAM_ID,
+    objective:
+      "Develop an original English-language singer and a coherent catalog of excellent songs",
+    artistBrief: ARTIST_BRIEF,
+    currentStage:
+      (input.musicArtifacts ?? []).length === 0
+        ? "Establish the artist identity and draft the first song"
+        : "Improve drafts through review, production planning and iteration",
+    musicArtifacts: (input.musicArtifacts ?? []).slice(0, 8).map((item) => ({
+      kind: item.kind,
+      title: item.title,
+      status: item.status,
+      excerpt: item.content.slice(0, 900)
+    })),
     recentDirectives: input.recentDirectives.slice(0, 3),
     recentMissions: input.recentMissions.slice(0, 3).map((mission) => ({
       status: mission.status,
@@ -114,7 +130,7 @@ export function compactStateSummary(input: {
       evidence: mission.evidence.slice(0, 5),
       unknowns: mission.unknowns,
       recommendation: mission.decisionRecommendation,
-      actualCostUsd: mission.actualCostUsd
+      artifacts: mission.agentRuns.flatMap((run) => run.artifacts).length
     })),
     pendingHumanGates: input.pendingHumanGates,
     recentEvents: input.recentEvents.slice(0, 8)
@@ -131,7 +147,7 @@ export async function runStrategistReview(
 }> {
   const reply = await runModel(
     "STRATEGIST",
-    `You are STRATEGIST. Decide WHAT deserves attention and WHY. Do no operational work. A valid choice is WAIT. Seek external economic evidence, question assumptions, and avoid creating busywork. If no opportunity is validated and public evidence is missing, consider a small comparative research mission; WAIT only when a new review cannot improve the decision. Never prescribe the conclusion. No spending, external contact, publication, account creation, or secret changes. Return ONLY JSON: {"decision":"NEW_MISSION|CONTINUE|ITERATE|SCALE|KILL|WAIT","objective":"...","reason":"...","successCriteria":[],"constraints":[],"priority":0,"maxBudgetUsd":0,"timeLimitMinutes":20,"requiredEvidence":[],"deliverable":"..."}. For WAIT set objective and deliverable to empty strings. Monetary costs may be unknown; keep the mission small.\nSTATE: ${stateSummary}`
+    `You are the strategic director of an original English-language singer project. Decide WHAT small creative step matters next and WHY; ROOT handles execution. The artistic direction is alternative soul with a rough-edged, powerful emotional female voice, concrete and sometimes sharp lyrics, and hip-hop/trap rhythm. Build a coherent artist identity and song catalog through this sequence: identity and song brief -> original song/lyrics/topline draft -> production and vocal direction -> independent artistic review -> release proposal -> audience feedback. Begin with identity and a first song draft if no music artifacts exist. Prefer a concrete artifact and quality criterion over activity. External music market research is optional; do not mistake web snippets for verified facts. Treat named artists only as high-level references, never as voices, melodies or lyrics to copy. A valid choice is WAIT when a decision truly requires input. No spending, distribution, external contact, publication, account creation or secret changes. Return ONLY JSON: {"decision":"NEW_MISSION|CONTINUE|ITERATE|SCALE|KILL|WAIT","objective":"...","reason":"...","successCriteria":[],"constraints":[],"priority":0,"maxBudgetUsd":0,"timeLimitMinutes":20,"requiredEvidence":[],"deliverable":"..."}. For WAIT set objective and deliverable to empty strings. Set maxBudgetUsd to 0 unless a cost is specifically justified, and keep the mission small.\nSTATE: ${stateSummary}`
   );
   const raw = parseModelJson(reply.text, z.record(z.string(), z.unknown()));
   const decision = strategistDecisionSchema.parse({
@@ -153,6 +169,7 @@ export async function runStrategistReview(
     directive: directiveSchema.parse({
       ...decision,
       directiveId: crypto.randomUUID(),
+      programId: MUSIC_PROGRAM_ID,
       createdAt: now.toISOString()
     }),
     route: reply.route
@@ -176,7 +193,7 @@ export async function runRootMission(
     modelCalls++;
     const planReply = await deps.runModel(
       "ROOT",
-      `You are ROOT. Choose HOW to execute this STRATEGIST directive. You have no direct web tools. If requiredEvidence is nonempty, delegate public evidence gathering to at least one RESEARCHER. At most ${limits.maxSpecialistsPerMission} temporary specialists. RESEARCHER may use webSearch and readPage; other roles have no external tools in V1. Never spend, contact, publish, create accounts, destroy, or change secrets; put a specific needed action in humanGates. Return ONLY one compact JSON object, under 500 words, with: approach (string, max 500 chars), specialists (array; each has role, task max 500 chars, searchQuery (one string of 3-8 relevant search terms, never an array; target a specific public job post or discussion thread with a site: query, not a vendor page), reasonForDelegation, expectedValueOfDelegation, allowedTools), directFindings (array of strings; empty unless facts were verified with tools), humanGates (array of objects with proposedAction, reason, expectedBenefit, risk, exactApprovalNeeded; empty if none). No prose before or after JSON.\nDIRECTIVE: ${JSON.stringify(validDirective)}`
+      `You are ROOT, the production coordinator for an original English-language singer. Turn the STRATEGIST directive into a small, reviewable creative mission. You have no direct audio-generation, listening, image-generation or web tools. At most ${limits.maxSpecialistsPerMission} temporary specialists from SONGWRITER, PRODUCER, VOCAL_DIRECTOR, A_AND_R, ART_DIRECTOR, RELEASE_PLANNER, RESEARCHER and AUDITOR. Assign at least one creative specialist when a draft is needed. Creative specialists make text drafts with no external tools; only RESEARCHER may use webSearch and readPage when public evidence is genuinely needed. A song draft needs an emotional statement, a distinctive original line, and a chorus that works with only piano or guitar. Do not claim a text draft is a finished recording. Do not imitate or clone a real artist. Never spend, contact, publish, upload, distribute, create accounts, destroy or change secrets; put an external action in a humanGate only when it is required for this current mission. Future registration, recording and publication are later stages, not gates for a text draft. A provisional artist name does not block drafting. Return ONLY one compact JSON object, under 500 words, with: approach (string), specialists (array; each has role, task, optional searchQuery as one string, reasonForDelegation, expectedValueOfDelegation, allowedTools), directFindings (empty unless verified), humanGates (array with proposedAction, reason, expectedBenefit, risk, exactApprovalNeeded). No prose before or after JSON.\nARTIST BRIEF: ${JSON.stringify(ARTIST_BRIEF)}\nDIRECTIVE: ${JSON.stringify(validDirective)}`
     );
     rootRoute = planReply.route;
     rootRoutes.push(planReply.route);
@@ -192,7 +209,7 @@ export async function runRootMission(
       modelCalls++;
       const repair = await deps.runModel(
         "ROOT",
-        `Return ONLY valid compact JSON under 400 words for this directive. ROOT has no direct web tools; required public evidence needs a RESEARCHER with allowedTools ["webSearch","readPage"]. Keys: approach:string, specialists:array of at most ${limits.maxSpecialistsPerMission} objects with role,task,searchQuery,reasonForDelegation,expectedValueOfDelegation,allowedTools (searchQuery must be one string targeting a specific public job post or discussion thread using site:); directFindings:array of strings; humanGates:array of objects with proposedAction,reason,expectedBenefit,risk,exactApprovalNeeded. Use empty arrays when none. Keep every string short. No markdown or explanation. Directive: ${JSON.stringify(validDirective)}`
+        `Return ONLY valid compact JSON under 400 words for this original singer project. ROOT has no direct audio, image or web tools. Delegate drafts to SONGWRITER, PRODUCER, VOCAL_DIRECTOR, A_AND_R, ART_DIRECTOR or RELEASE_PLANNER with allowedTools []; RESEARCHER alone may use ["webSearch","readPage"] if public evidence is needed. Keys: approach:string, specialists:array of at most ${limits.maxSpecialistsPerMission} objects with role,task,optional searchQuery (one string),reasonForDelegation,expectedValueOfDelegation,allowedTools; directFindings:array of strings; humanGates:array of objects with proposedAction,reason,expectedBenefit,risk,exactApprovalNeeded. No markdown or explanation. Directive: ${JSON.stringify(validDirective)}`
       );
       rootRoute = repair.route;
       rootRoutes.push(repair.route);
@@ -209,7 +226,8 @@ export async function runRootMission(
       searchQuery: item.searchQuery,
       context: JSON.stringify({
         directive: validDirective,
-        approach: plan.approach
+        approach: plan.approach,
+        artistBrief: ARTIST_BRIEF
       }).slice(0, 3000),
       allowedTools: item.allowedTools,
       maxModelCalls: limits.maxModelCallsPerSpecialist,
@@ -227,9 +245,28 @@ export async function runRootMission(
         role: spec.role,
         reason: spec.reasonForDelegation
       });
-    const settled = await Promise.allSettled(
-      specs.map((spec) => spawnSpecialist(spec, deps))
-    );
+    const settled: PromiseSettledResult<SpecialistResult>[] = [];
+    for (const spec of specs) {
+      const priorArtifacts = settled
+        .filter(
+          (item): item is PromiseFulfilledResult<SpecialistResult> =>
+            item.status === "fulfilled"
+        )
+        .flatMap((item) => item.value.artifacts)
+        .slice(0, 2)
+        .map((artifact) => artifact.slice(0, 8000));
+      const context = priorArtifacts.length
+        ? JSON.stringify({
+            priorArtifacts,
+            objective: validDirective.objective,
+            artistBrief: ARTIST_BRIEF
+          }).slice(0, 11000)
+        : spec.context;
+      const [outcome] = await Promise.allSettled([
+        spawnSpecialist({ ...spec, context }, deps)
+      ]);
+      settled.push(outcome);
+    }
     const specialists: SpecialistResult[] = settled.map((outcome, index) => {
       if (outcome.status === "fulfilled") return outcome.value;
       providerFailures.push("SPECIALIST_EXECUTION_FAILED");
@@ -274,11 +311,22 @@ export async function runRootMission(
       )
     );
     const evidence = specialists.flatMap((result) => result.observedEvidence);
+    const artifacts = specialists.flatMap((result) => result.artifacts);
     const unknowns = specialists.flatMap((result) => result.unknowns);
+    // These missions produce text drafts only. Proposed later-stage approvals
+    // must not block or reclassify a successfully completed draft.
+    const humanGates =
+      validDirective.programId === MUSIC_PROGRAM_ID &&
+      validDirective.requiredEvidence.length === 0
+        ? []
+        : plan.humanGates;
     const status =
-      plan.humanGates.length > 0
+      humanGates.length > 0
         ? "HUMAN_GATE_REQUIRED"
-        : (evidence.length === 0 &&
+        : (validDirective.programId === MUSIC_PROGRAM_ID &&
+              validDirective.requiredEvidence.length === 0 &&
+              artifacts.length === 0) ||
+            (evidence.length === 0 &&
               validDirective.requiredEvidence.length > 0) ||
             specialists.some(
               (result) =>
@@ -311,7 +359,7 @@ export async function runRootMission(
       actualCostUsd: null,
       elapsedMs: Date.now() - started,
       providerFailures,
-      humanGates: plan.humanGates,
+      humanGates,
       recommendedNextAction: specialists
         .map((result) => result.recommendedNextAction)
         .join("; "),

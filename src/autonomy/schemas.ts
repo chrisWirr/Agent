@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MUSIC_SPECIALIST_ROLES } from "../music/project";
 
 export const decisionSchema = z.enum([
   "NEW_MISSION",
@@ -11,6 +12,7 @@ export const decisionSchema = z.enum([
 
 export const directiveSchema = z.object({
   directiveId: z.string().min(1),
+  programId: z.string().max(80).optional(),
   decision: decisionSchema,
   objective: z.string().max(1200),
   reason: z.string().max(1200),
@@ -111,11 +113,11 @@ export type MissionResult = z.infer<typeof missionResultSchema>;
 
 export const specialistSpecSchema = z.object({
   agentId: z.string().min(1).max(80),
-  role: z.string().regex(/^[A-Z][A-Z0-9_]{1,39}$/),
+  role: z.enum(MUSIC_SPECIALIST_ROLES),
   objective: z.string().min(1).max(800),
   task: z.string().min(1).max(1200),
   searchQuery: z.string().min(3).max(160).optional(),
-  context: z.string().max(3000),
+  context: z.string().max(11000),
   allowedTools: z.array(z.enum(["webSearch", "readPage"])).max(2),
   preferredModel: z.string().max(120).optional(),
   maxModelCalls: z.number().int().min(1).max(2),
