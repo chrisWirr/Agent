@@ -12,6 +12,7 @@ import {
 import { z } from "zod";
 import { createWorkersAI } from "workers-ai-provider";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { Buffer } from "node:buffer";
 import { createModelRunner } from "./autonomy/model";
 import {
   compactStateSummary,
@@ -28,6 +29,14 @@ import {
 } from "./autonomy/research";
 import { directiveSchema, missionResultSchema } from "./autonomy/schemas";
 import { ARTIST_BRIEF, MUSIC_PROGRAM_ID } from "./music/project";
+import {
+  auditSunoReturn,
+  prepareSunoPackage,
+  songText,
+  sunoAuditStatus,
+  sunoSubmissionSchema,
+  type SunoHandoff
+} from "./music/suno";
 
 async function selectModel(env: Env) {
   const workersai = createWorkersAI({ binding: env.AI });
@@ -76,6 +85,7 @@ export class ChatAgent extends AIChatAgent<Env> {
       ? Math.max(60, Math.min(1440, configuredMinutes))
       : 360;
     await this.scheduleEvery(minutes * 60, "scheduledStrategistReview");
+    await this.queueSunoPreparation();
     if (store.recentDirectives().length === 0) {
       const failedBefore = Boolean(
         store.latestEvent("MUSIC_STRATEGIST_REVIEW_FAILED")
@@ -159,6 +169,21 @@ export class ChatAgent extends AIChatAgent<Env> {
           kind: item.kind,
           title: item.title,
           status: item.status
+        })),
+      sunoHandoffs: store
+        .recentSunoHandoffs()
+        .slice(0, 3)
+        .map((handoff) => ({
+          id: handoff.id,
+          title: handoff.title,
+          status: handoff.status,
+          stylePrompt:
+            handoff.status === "READY_FOR_SUNO"
+              ? handoff.preparation?.stylePrompt
+              : undefined,
+          lyrics:
+            handoff.status === "READY_FOR_SUNO" ? handoff.lyrics : undefined,
+          auditDecision: handoff.audit?.decision
         }))
     };
   }
@@ -170,9 +195,218 @@ export class ChatAgent extends AIChatAgent<Env> {
       programId: MUSIC_PROGRAM_ID,
       artistBrief: ARTIST_BRIEF,
       drafts: store.recentMusicArtifacts(),
+      sunoHandoffs: store.recentSunoHandoffs(),
       lastDirective: store.recentDirectives()[0] ?? null,
       lastMission: store.recentMissions()[0] ?? null
     };
+  }
+
+  async queueSunoPreparation() {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const drafts = store.recentMusicArtifacts();
+    const revision = drafts.find((item) => item.kind === "SONG_REVISION");
+    if (!revision) return { queued: false, reason: "NO_REVISED_SONG" };
+    const review = drafts.find(
+      (item) =>
+        item.kind === "LYRIC_REVIEW" && item.mission_id === revision.mission_id
+    );
+    if (!review) return { queued: false, reason: "LYRIC_REVIEW_MISSING" };
+    const id = `suno:${revision.id}`;
+    const existing = store.getSunoHandoff(id);
+    if (existing) {
+      if (existing.status !== "FAILED" || existing.preparation)
+        return { queued: false, reason: "ALREADY_PREPARED", handoffId: id };
+      if (
+        store.countEventsSince(
+          "MUSIC_SUNO_PREPARATION_FAILED",
+          Date.now() - 24 * 60 * 60 * 1000
+        ) >= 2
+      )
+        return {
+          queued: false,
+          reason: "PREPARATION_RETRY_LIMIT",
+          handoffId: id
+        };
+      store.saveSunoHandoff({
+        ...existing,
+        status: "PREPARING",
+        updatedAt: new Date().toISOString()
+      });
+      await this.schedule(10, "scheduledPrepareSuno", id, {
+        idempotent: true
+      });
+      return { queued: true, handoffId: id, retry: true };
+    }
+    const song = songText(revision.content);
+    const now = new Date().toISOString();
+    const handoff: SunoHandoff = {
+      id,
+      sourceArtifactId: revision.id,
+      sourceMissionId: revision.mission_id,
+      title: song.title,
+      lyrics: song.lyrics,
+      preparation: null,
+      status: "PREPARING",
+      submission: null,
+      audit: null,
+      createdAt: now,
+      updatedAt: now
+    };
+    store.saveSunoHandoff(handoff);
+    store.recordEvent("MUSIC_SUNO_PREPARATION_QUEUED", {
+      handoffId: id,
+      sourceArtifactId: revision.id
+    });
+    await this.schedule(10, "scheduledPrepareSuno", id, {
+      idempotent: true
+    });
+    return { queued: true, handoffId: id };
+  }
+
+  async scheduledPrepareSuno(handoffId: string) {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const handoff = store.getSunoHandoff(handoffId);
+    if (!handoff || handoff.status !== "PREPARING") return;
+    const revision = store.getMusicArtifact(handoff.sourceArtifactId);
+    const drafts = store.recentMusicArtifacts();
+    const review = drafts.find(
+      (item) =>
+        item.kind === "LYRIC_REVIEW" &&
+        item.mission_id === handoff.sourceMissionId
+    );
+    if (!revision || revision.kind !== "SONG_REVISION" || !review) {
+      store.saveSunoHandoff({
+        ...handoff,
+        status: "FAILED",
+        updatedAt: new Date().toISOString()
+      });
+      store.recordEvent("MUSIC_SUNO_PREPARATION_FAILED", { handoffId });
+      return;
+    }
+    const production = drafts.find((item) => item.kind === "PRODUCTION_BRIEF");
+    try {
+      const preparation = await prepareSunoPackage(
+        {
+          title: handoff.title,
+          lyrics: handoff.lyrics,
+          lyricReview: songText(review.content).lyrics,
+          productionBrief: production?.content ?? ""
+        },
+        createModelRunner(this.env)
+      );
+      store.saveSunoHandoff({
+        ...handoff,
+        preparation,
+        status:
+          preparation.decision === "READY"
+            ? "READY_FOR_SUNO"
+            : "NEEDS_REVISION",
+        updatedAt: new Date().toISOString()
+      });
+      store.recordEvent("MUSIC_SUNO_PREPARATION_COMPLETED", {
+        handoffId,
+        decision: preparation.decision
+      });
+    } catch {
+      store.saveSunoHandoff({
+        ...handoff,
+        status: "FAILED",
+        updatedAt: new Date().toISOString()
+      });
+      store.recordEvent("MUSIC_SUNO_PREPARATION_FAILED", { handoffId });
+    }
+  }
+
+  async submitSunoResult(input: unknown) {
+    const submission = sunoSubmissionSchema.parse(input);
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const handoff = store.getSunoHandoff(submission.handoffId);
+    if (!handoff) return { accepted: false, reason: "HANDOFF_NOT_FOUND" };
+    if (!["READY_FOR_SUNO", "AWAITING_AUDIO"].includes(handoff.status))
+      return { accepted: false, reason: "HANDOFF_NOT_READY" };
+    const readyForAudit = Boolean(submission.audioEvidence?.transcript.trim());
+    store.saveSunoHandoff({
+      ...handoff,
+      submission,
+      status: readyForAudit ? "AUDITING" : "AWAITING_AUDIO",
+      updatedAt: new Date().toISOString()
+    });
+    store.recordEvent("MUSIC_SUNO_RESULT_RECEIVED", {
+      handoffId: handoff.id,
+      hasTranscript: readyForAudit
+    });
+    if (readyForAudit)
+      await this.schedule(10, "scheduledAuditSuno", handoff.id, {
+        idempotent: true
+      });
+    return {
+      accepted: true,
+      handoffId: handoff.id,
+      status: readyForAudit ? "AUDITING" : "AWAITING_AUDIO"
+    };
+  }
+
+  async scheduledAuditSuno(handoffId: string) {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const handoff = store.getSunoHandoff(handoffId);
+    if (!handoff || handoff.status !== "AUDITING") return;
+    try {
+      const audit = await auditSunoReturn(handoff, createModelRunner(this.env));
+      const status = sunoAuditStatus(
+        audit.decision,
+        handoff.submission?.rightsBasis ?? "UNKNOWN"
+      );
+      store.saveSunoHandoff({
+        ...handoff,
+        audit,
+        status,
+        updatedAt: new Date().toISOString()
+      });
+      store.recordEvent("MUSIC_SUNO_AUDIT_COMPLETED", {
+        handoffId,
+        decision: audit.decision,
+        status
+      });
+    } catch {
+      store.saveSunoHandoff({
+        ...handoff,
+        status: "FAILED",
+        updatedAt: new Date().toISOString()
+      });
+      store.recordEvent("MUSIC_SUNO_AUDIT_FAILED", { handoffId });
+    }
+  }
+
+  async retrySunoAudit(handoffId: string) {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const handoff = store.getSunoHandoff(handoffId);
+    if (
+      !handoff ||
+      handoff.status !== "FAILED" ||
+      !handoff.submission?.audioEvidence?.transcript.trim()
+    )
+      return { queued: false, reason: "NO_FAILED_AUDIT" };
+    if (
+      store.countEventsSince(
+        "MUSIC_SUNO_AUDIT_FAILED",
+        Date.now() - 24 * 60 * 60 * 1000
+      ) >= 2
+    )
+      return { queued: false, reason: "AUDIT_RETRY_LIMIT" };
+    store.saveSunoHandoff({
+      ...handoff,
+      status: "AUDITING",
+      updatedAt: new Date().toISOString()
+    });
+    await this.schedule(10, "scheduledAuditSuno", handoffId, {
+      idempotent: true
+    });
+    return { queued: true, handoffId };
   }
 
   async queueLyricsReview() {
@@ -308,6 +542,7 @@ export class ChatAgent extends AIChatAgent<Env> {
         })
       );
       started = false;
+      await this.queueSunoPreparation();
     } catch {
       if (started) store.failMission(payload.directiveId);
       store.recordEvent("MUSIC_LYRICS_REVIEW_FAILED", {
@@ -406,6 +641,7 @@ export class ChatAgent extends AIChatAgent<Env> {
       );
       store.saveMission(result);
       activeDirectiveId = null;
+      await this.queueSunoPreparation();
       for (const route of result.routes) {
         if (route.fallbackUsed)
           store.recordEvent("FALLBACK_USED", {
@@ -553,6 +789,7 @@ export class ChatAgent extends AIChatAgent<Env> {
       );
       store.saveMission(result);
       activeDirectiveId = null;
+      await this.queueSunoPreparation();
       return {
         started: true,
         status: result.status,
@@ -605,6 +842,11 @@ export class ChatAgent extends AIChatAgent<Env> {
         recentDirectives: store.recentDirectives(),
         recentMissions: previousMissions,
         musicArtifacts: store.recentMusicArtifacts(),
+        sunoHandoffs: store.recentSunoHandoffs().map((handoff) => ({
+          title: handoff.title,
+          status: handoff.status,
+          auditDecision: handoff.audit?.decision
+        })),
         pendingHumanGates: previousMissions.reduce(
           (sum, mission) => sum + mission.humanGates.length,
           0
@@ -657,6 +899,7 @@ export class ChatAgent extends AIChatAgent<Env> {
       );
       store.saveMission(result);
       activeDirectiveId = null;
+      await this.queueSunoPreparation();
       for (const usedRoute of result.routes) {
         if (usedRoute.fallbackUsed)
           store.recordEvent("FALLBACK_USED", {
@@ -833,9 +1076,13 @@ export default {
               "/admin/search-diagnostics"
             ].includes(pathname)) ||
           (request.method === "POST" &&
-            ["/admin/retry-research", "/admin/review-lyrics"].includes(
-              pathname
-            )) ||
+            [
+              "/admin/retry-research",
+              "/admin/review-lyrics",
+              "/admin/suno/prepare",
+              "/admin/suno/submit",
+              "/admin/suno/retry-audit"
+            ].includes(pathname)) ||
           (request.method === "POST" &&
             [
               "/admin/external-directive",
@@ -898,6 +1145,99 @@ export default {
         return Response.json(await stub.queueLyricsReview(), {
           headers: { "cache-control": "no-store" }
         });
+      }
+      if (pathname === "/admin/suno/prepare") {
+        const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
+        return Response.json(await stub.queueSunoPreparation(), {
+          headers: { "cache-control": "no-store" }
+        });
+      }
+      if (pathname === "/admin/suno/retry-audit") {
+        let handoffId: string;
+        try {
+          const body = await request.text();
+          if (body.length > 500)
+            return Response.json(
+              { error: "PAYLOAD_TOO_LARGE" },
+              { status: 413 }
+            );
+          handoffId = z
+            .object({ handoffId: z.string().min(1).max(250) })
+            .parse(JSON.parse(body)).handoffId;
+        } catch {
+          return Response.json({ error: "INVALID_HANDOFF" }, { status: 400 });
+        }
+        const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
+        return Response.json(await stub.retrySunoAudit(handoffId), {
+          headers: { "cache-control": "no-store" }
+        });
+      }
+      if (pathname === "/admin/suno/submit") {
+        const size = Number(request.headers.get("content-length") ?? 0);
+        if (size > 10_000_000)
+          return Response.json({ error: "UPLOAD_TOO_LARGE" }, { status: 413 });
+        let submission: unknown;
+        let transcriptionError = false;
+        try {
+          const form = await request.formData();
+          const audio = form.get("audio");
+          let audioEvidence: {
+            filename: string;
+            byteLength: number;
+            sha256: string;
+            transcript: string;
+          } | null = null;
+          if (audio instanceof File && audio.size > 0) {
+            if (audio.size > 6_000_000 || !/\.mp3$/i.test(audio.name))
+              return Response.json(
+                { error: "MP3_REQUIRED_MAX_6MB" },
+                { status: 400 }
+              );
+            const bytes = await audio.arrayBuffer();
+            const digest = await crypto.subtle.digest("SHA-256", bytes);
+            const sha256 = [...new Uint8Array(digest)]
+              .map((value) => value.toString(16).padStart(2, "0"))
+              .join("");
+            let transcript = "";
+            try {
+              const result = await env.AI.run(
+                "@cf/openai/whisper-large-v3-turbo",
+                {
+                  audio: Buffer.from(bytes).toString("base64"),
+                  task: "transcribe",
+                  language: "en"
+                }
+              );
+              transcript = result.text?.slice(0, 12000) ?? "";
+              if (!transcript.trim()) transcriptionError = true;
+            } catch {
+              transcriptionError = true;
+            }
+            audioEvidence = {
+              filename: audio.name.slice(0, 160),
+              byteLength: audio.size,
+              sha256,
+              transcript
+            };
+          }
+          submission = sunoSubmissionSchema.parse({
+            handoffId: form.get("handoffId"),
+            sunoUrl: form.get("sunoUrl"),
+            listeningNotes: form.get("listeningNotes"),
+            rightsBasis: form.get("rightsBasis"),
+            audioEvidence
+          });
+        } catch {
+          return Response.json(
+            { error: "INVALID_SUNO_RESULT" },
+            { status: 400 }
+          );
+        }
+        const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
+        return Response.json(
+          { ...(await stub.submitSunoResult(submission)), transcriptionError },
+          { headers: { "cache-control": "no-store" } }
+        );
       }
       if (pathname === "/admin/external-directive") {
         let payload: unknown;

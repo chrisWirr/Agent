@@ -1,5 +1,6 @@
 import type { Directive, MissionResult } from "./schemas";
 import { MUSIC_PROGRAM_ID, musicArtifactKind } from "../music/project";
+import type { SunoHandoff } from "../music/suno";
 
 type Sql = <T = Record<string, string | number | boolean | null>>(
   strings: TemplateStringsArray,
@@ -49,6 +50,14 @@ export class AutonomyStore {
       content TEXT NOT NULL,
       status TEXT NOT NULL,
       created_at INTEGER NOT NULL
+    )`;
+    this.sql`CREATE TABLE IF NOT EXISTS music_handoffs (
+      id TEXT PRIMARY KEY,
+      source_artifact_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
     )`;
     this
       .sql`CREATE INDEX IF NOT EXISTS autonomy_entries_kind_time ON autonomy_entries(kind, created_at DESC)`;
@@ -218,6 +227,37 @@ export class AutonomyStore {
       ...item,
       kind: musicArtifactKind("", item.content) ?? item.kind
     }));
+  }
+
+  getMusicArtifact(id: string): MusicArtifact | null {
+    const item = this
+      .sql<MusicArtifact>`SELECT id, mission_id, kind, title, content, status, created_at
+      FROM music_artifacts WHERE id = ${id} LIMIT 1`[0];
+    return item
+      ? { ...item, kind: musicArtifactKind("", item.content) ?? item.kind }
+      : null;
+  }
+
+  saveSunoHandoff(handoff: SunoHandoff) {
+    const now = Date.now();
+    this.sql`INSERT INTO music_handoffs
+      (id, source_artifact_id, status, payload, created_at, updated_at)
+      VALUES (${handoff.id}, ${handoff.sourceArtifactId}, ${handoff.status}, ${JSON.stringify(handoff)}, ${now}, ${now})
+      ON CONFLICT(id) DO UPDATE SET
+      status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`;
+  }
+
+  getSunoHandoff(id: string): SunoHandoff | null {
+    const row = this.sql<{ payload: string }>`SELECT payload FROM music_handoffs
+      WHERE id = ${id} LIMIT 1`[0];
+    return row ? (JSON.parse(row.payload) as SunoHandoff) : null;
+  }
+
+  recentSunoHandoffs(): SunoHandoff[] {
+    return this.sql<{ payload: string }>`SELECT payload FROM music_handoffs
+      ORDER BY created_at DESC LIMIT 10`.map(
+      (row) => JSON.parse(row.payload) as SunoHandoff
+    );
   }
 
   recentDirectives(): Directive[] {

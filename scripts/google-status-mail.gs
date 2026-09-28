@@ -95,6 +95,25 @@ function checkRootStatusLocked() {
     properties.setProperties({ initialSent: "1", lastMission: fingerprint });
     return;
   }
+  const readySuno = (status.sunoHandoffs || []).find(
+    (handoff) => handoff.status === "READY_FOR_SUNO"
+  );
+  if (readySuno && !properties.getProperty(`sunoSent:${readySuno.id}`)) {
+    MailApp.sendEmail(
+      ROOT_RECIPIENT,
+      `[ROOT] Suno-Auftrag bereit: ${String(readySuno.title || "Song").slice(0, 100)}`,
+      [
+        "ROOT und das Musikteam halten diesen Song für eine Suno-Demo bereit.",
+        "Öffne Suno Custom Mode. Füge die Lyrics in das Lyrics-Feld und den Style-Prompt in Style of Music ein. Höre die Varianten selbst an und gib die beste Version im privaten Workspace zurück.",
+        `Titel: ${String(readySuno.title || "")}`,
+        `Style of Music:\n${String(readySuno.stylePrompt || "")}`,
+        `Lyrics:\n${String(readySuno.lyrics || "")}`,
+        `Workspace: ${ROOT_WORKER_URL}studio`
+      ].join("\n\n")
+    );
+    properties.setProperty(`sunoSent:${readySuno.id}`, "1");
+    return;
+  }
   if (fingerprint !== properties.getProperty("lastMission")) {
     MailApp.sendEmail(
       ROOT_RECIPIENT,

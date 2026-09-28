@@ -14,9 +14,159 @@ type Workspace = {
   programId: string;
   artistBrief: Record<string, unknown>;
   drafts: Draft[];
+  sunoHandoffs: SunoHandoff[];
   lastDirective: { decision: string; objective: string } | null;
   lastMission: { status: string; summary: string } | null;
 };
+
+type SunoHandoff = {
+  id: string;
+  title: string;
+  lyrics: string;
+  status: string;
+  preparation: {
+    decision: "READY" | "REVISE";
+    reason: string;
+    stylePrompt: string;
+    qualityChecks: string[];
+  } | null;
+  submission: {
+    sunoUrl: string;
+    listeningNotes: string;
+    rightsBasis: string;
+    audioEvidence: { transcript: string } | null;
+  } | null;
+  audit: {
+    decision: string;
+    summary: string;
+    lyricFidelity: string;
+    strengths: string[];
+    issues: string[];
+    uncertainties: string[];
+    releaseProposal: string;
+  } | null;
+};
+
+function SunoReturnForm({
+  handoff,
+  token,
+  onSubmitted
+}: {
+  handoff: SunoHandoff;
+  token: string;
+  onSubmitted: () => Promise<void>;
+}) {
+  const [url, setUrl] = useState(handoff.submission?.sunoUrl ?? "");
+  const [notes, setNotes] = useState(handoff.submission?.listeningNotes ?? "");
+  const [rights, setRights] = useState(
+    handoff.submission?.rightsBasis ?? "UNKNOWN"
+  );
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  return (
+    <form
+      className="mt-5 space-y-3 border-t border-kumo-line pt-5"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        setBusy(true);
+        setMessage("");
+        try {
+          const form = new FormData();
+          form.set("handoffId", handoff.id);
+          form.set("sunoUrl", url.trim());
+          form.set("listeningNotes", notes.trim());
+          form.set("rightsBasis", rights);
+          if (file) form.set("audio", file);
+          const response = await fetch("/admin/suno/submit", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token.trim()}` },
+            body: form
+          });
+          const result = (await response.json()) as {
+            accepted?: boolean;
+            reason?: string;
+            error?: string;
+            transcriptionError?: boolean;
+          };
+          if (!response.ok || !result.accepted)
+            throw new Error(
+              result.error ?? result.reason ?? "Abgabe fehlgeschlagen"
+            );
+          setMessage(
+            result.transcriptionError
+              ? "Link gespeichert, aber die Transkription ist fehlgeschlagen. Bitte MP3 erneut senden."
+              : file
+                ? "Ergebnis eingegangen. Die Prüfung läuft; bitte aktualisieren."
+                : "Link gespeichert. Für die Text-/Audio-Prüfung bitte auch eine MP3 hochladen."
+          );
+          await onSubmitted();
+        } catch (cause) {
+          setMessage(
+            cause instanceof Error ? cause.message : "Abgabe fehlgeschlagen"
+          );
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <h4 className="font-semibold">Dein bestes Suno-Ergebnis zurückgeben</h4>
+      <label className="block text-sm">
+        Suno-Link
+        <input
+          type="url"
+          required
+          value={url}
+          onChange={(event) => setUrl(event.target.value)}
+          placeholder="https://suno.com/song/..."
+          className="mt-1 w-full rounded-lg border border-kumo-line bg-kumo-elevated px-3 py-2"
+        />
+      </label>
+      <label className="block text-sm">
+        Was du beim Hören bemerkst (Stimme, Refrain, Text, Produktion)
+        <textarea
+          required
+          minLength={30}
+          rows={4}
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+          className="mt-1 w-full rounded-lg border border-kumo-line bg-kumo-elevated px-3 py-2"
+        />
+      </label>
+      <label className="block text-sm">
+        Suno-Tarif zum Zeitpunkt der Erzeugung
+        <select
+          value={rights}
+          onChange={(event) => setRights(event.target.value)}
+          className="mt-1 w-full rounded-lg border border-kumo-line bg-kumo-elevated px-3 py-2"
+        >
+          <option value="UNKNOWN">Unbekannt</option>
+          <option value="PAID_AT_CREATION">Bezahlter Tarif</option>
+          <option value="FREE">Kostenloser Tarif</option>
+        </select>
+      </label>
+      <label className="block text-sm">
+        MP3 des ausgewählten Ergebnisses (optional, maximal 6 MB)
+        <input
+          type="file"
+          accept=".mp3,audio/mpeg"
+          onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+          className="mt-1 block w-full text-sm"
+        />
+      </label>
+      <Text size="sm" variant="secondary">
+        Die MP3 wird nur zur automatischen Transkription verarbeitet. Die Datei
+        wird nicht gespeichert; der Suno-Link bleibt die Hörquelle. Ohne
+        Audiodatei erstellt das System noch keinen vollständigen Audit.
+      </Text>
+      <Button type="submit" variant="primary" disabled={busy}>
+        {busy ? "Verarbeite …" : "Ergebnis übergeben"}
+      </Button>
+      {message && <output className="text-sm">{message}</output>}
+    </form>
+  );
+}
 
 function draftDisplay(draft: Draft): { title: string; body: string } {
   try {
@@ -182,6 +332,195 @@ export default function StudioPage() {
                 </Text>
                 <p className="mt-1 font-semibold">Noch offen</p>
               </Surface>
+            </section>
+
+            <section>
+              <h2 className="mb-3 text-lg font-semibold">Übergabe an Suno</h2>
+              {(workspace.sunoHandoffs ?? []).length === 0 ? (
+                <Surface className="rounded-xl border border-kumo-line bg-kumo-base p-5">
+                  <p className="text-sm">
+                    Noch kein Song wurde für Suno freigegeben.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="mt-3"
+                    onClick={async () => {
+                      setLoading(true);
+                      try {
+                        await fetch("/admin/suno/prepare", {
+                          method: "POST",
+                          headers: { Authorization: `Bearer ${token.trim()}` }
+                        });
+                        await loadWorkspace();
+                      } finally {
+                        setLoading(false);
+                      }
+                    }}
+                  >
+                    Letzten Song prüfen lassen
+                  </Button>
+                </Surface>
+              ) : (
+                <div className="space-y-4">
+                  {workspace.sunoHandoffs.map((handoff) => (
+                    <Surface
+                      key={handoff.id}
+                      className="rounded-xl border border-kumo-line bg-kumo-base p-5"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="text-lg font-semibold">
+                          {handoff.title}
+                        </h3>
+                        <Badge variant="secondary">{handoff.status}</Badge>
+                      </div>
+                      {handoff.preparation && (
+                        <>
+                          <p className="mt-3 text-sm">
+                            {handoff.preparation.reason}
+                          </p>
+                          {handoff.preparation.decision === "READY" && (
+                            <div className="mt-5 space-y-4">
+                              <p className="text-sm">
+                                In{" "}
+                                <a
+                                  className="underline"
+                                  href="https://suno.com/create"
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Suno Custom Mode
+                                </a>{" "}
+                                den Text in „Lyrics“ und die Stilbeschreibung in
+                                „Style of Music“ einfügen. Danach hörst du die
+                                Varianten und gibst die beste hier zurück.
+                              </p>
+                              <label className="block text-sm font-semibold">
+                                Lyrics
+                                <textarea
+                                  readOnly
+                                  rows={12}
+                                  value={handoff.lyrics}
+                                  className="mt-1 w-full rounded-lg border border-kumo-line bg-kumo-elevated p-3 font-mono text-xs"
+                                />
+                              </label>
+                              <label className="block text-sm font-semibold">
+                                Suno Style of Music
+                                <textarea
+                                  readOnly
+                                  rows={5}
+                                  value={handoff.preparation.stylePrompt}
+                                  className="mt-1 w-full rounded-lg border border-kumo-line bg-kumo-elevated p-3 text-sm"
+                                />
+                              </label>
+                              <p className="text-sm font-semibold">
+                                Beim Anhören prüfen:
+                              </p>
+                              <ul className="list-disc space-y-1 pl-5 text-sm">
+                                {handoff.preparation.qualityChecks.map(
+                                  (check) => (
+                                    <li key={check}>{check}</li>
+                                  )
+                                )}
+                              </ul>
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {["READY_FOR_SUNO", "AWAITING_AUDIO"].includes(
+                        handoff.status
+                      ) && (
+                        <SunoReturnForm
+                          handoff={handoff}
+                          token={token}
+                          onSubmitted={loadWorkspace}
+                        />
+                      )}
+                      {handoff.submission &&
+                        !["READY_FOR_SUNO", "AWAITING_AUDIO"].includes(
+                          handoff.status
+                        ) && (
+                          <p className="mt-4 text-sm">
+                            Ausgewählte Version:{" "}
+                            <a
+                              className="underline"
+                              href={handoff.submission.sunoUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Suno öffnen
+                            </a>
+                          </p>
+                        )}
+                      {handoff.audit && (
+                        <div className="mt-5 space-y-3 border-t border-kumo-line pt-5 text-sm">
+                          <h4 className="font-semibold">
+                            Unabhängige Prüfung: {handoff.audit.decision}
+                          </h4>
+                          <p>{handoff.audit.summary}</p>
+                          <p>
+                            <strong>Lyrics:</strong>{" "}
+                            {handoff.audit.lyricFidelity}
+                          </p>
+                          {handoff.audit.issues.length > 0 && (
+                            <p>
+                              <strong>Offene Punkte:</strong>{" "}
+                              {handoff.audit.issues.join(" · ")}
+                            </p>
+                          )}
+                          {handoff.audit.uncertainties.length > 0 && (
+                            <p>
+                              <strong>Unsicher:</strong>{" "}
+                              {handoff.audit.uncertainties.join(" · ")}
+                            </p>
+                          )}
+                          {handoff.audit.releaseProposal && (
+                            <p>
+                              <strong>Verbreitungsvorschlag:</strong>{" "}
+                              {handoff.audit.releaseProposal}
+                            </p>
+                          )}
+                          <p className="text-kumo-subtle">
+                            Ein Vorschlag ist keine Veröffentlichung.
+                            Plattformen, Rechte und endgültige Freigabe werden
+                            vor jeder Verbreitung geprüft.
+                          </p>
+                        </div>
+                      )}
+                      {handoff.status === "FAILED" && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="mt-4"
+                          onClick={async () => {
+                            const auditFailed = Boolean(handoff.submission);
+                            const response = await fetch(
+                              auditFailed
+                                ? "/admin/suno/retry-audit"
+                                : "/admin/suno/prepare",
+                              {
+                                method: "POST",
+                                headers: {
+                                  Authorization: `Bearer ${token.trim()}`,
+                                  ...(auditFailed
+                                    ? { "Content-Type": "application/json" }
+                                    : {})
+                                },
+                                body: auditFailed
+                                  ? JSON.stringify({ handoffId: handoff.id })
+                                  : undefined
+                              }
+                            );
+                            if (response.ok) await loadWorkspace();
+                          }}
+                        >
+                          Prüfung erneut starten
+                        </Button>
+                      )}
+                    </Surface>
+                  ))}
+                </div>
+              )}
             </section>
 
             <section>

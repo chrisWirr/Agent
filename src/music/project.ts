@@ -19,6 +19,8 @@ export const ARTIST_BRIEF = {
     "songwriting and topline draft",
     "production and vocal direction",
     "independent artistic review",
+    "human Suno demo with the approved lyrics and style prompt",
+    "recording audit against a human listening report and audio transcript",
     "release proposal and human approval",
     "audience feedback and next iteration"
   ]

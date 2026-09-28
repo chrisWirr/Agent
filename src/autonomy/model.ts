@@ -12,6 +12,8 @@ function requestedModel(env: Env, role: Parameters<ModelRunner>[0]): string {
   if (role === "ROOT") return env.ROOT_MODEL || "openclaw/main";
   if (role === "LYRICS_EXPERT")
     return env.LYRICS_EXPERT_MODEL || LYRICS_CF_MODEL;
+  if (role === "SUNO_PREPARER" || role === "SUNO_AUDITOR")
+    return LYRICS_CF_MODEL;
   if (role === "AUDITOR")
     return env.AUDITOR_MODEL || env.DEFAULT_WORKER_MODEL || DEFAULT_CF_MODEL;
   return env.DEFAULT_WORKER_MODEL || DEFAULT_CF_MODEL;
@@ -78,7 +80,12 @@ export function createModelRunner(env: Env): ModelRunner {
       const result = await generateText({
         model: choice.model,
         prompt,
-        maxOutputTokens: role === "LYRICS_EXPERT" ? 3000 : 1500,
+        maxOutputTokens:
+          role === "LYRICS_EXPERT"
+            ? 3000
+            : role === "SUNO_PREPARER" || role === "SUNO_AUDITOR"
+              ? 2000
+              : 1500,
         maxRetries: 0,
         abortSignal: signal
       });
@@ -90,7 +97,12 @@ export function createModelRunner(env: Env): ModelRunner {
       const result = await generateText({
         model: cf.model,
         prompt,
-        maxOutputTokens: role === "LYRICS_EXPERT" ? 3000 : 1500,
+        maxOutputTokens:
+          role === "LYRICS_EXPERT"
+            ? 3000
+            : role === "SUNO_PREPARER" || role === "SUNO_AUDITOR"
+              ? 2000
+              : 1500,
         maxRetries: 0,
         abortSignal: signal
       });

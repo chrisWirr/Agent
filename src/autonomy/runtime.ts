@@ -11,7 +11,14 @@ import {
 
 export type ModelReply = { text: string; route: Route };
 export type ModelRunner = (
-  role: "STRATEGIST" | "ROOT" | "SPECIALIST" | "AUDITOR" | "LYRICS_EXPERT",
+  role:
+    | "STRATEGIST"
+    | "ROOT"
+    | "SPECIALIST"
+    | "AUDITOR"
+    | "LYRICS_EXPERT"
+    | "SUNO_PREPARER"
+    | "SUNO_AUDITOR",
   prompt: string,
   signal?: AbortSignal
 ) => Promise<ModelReply>;

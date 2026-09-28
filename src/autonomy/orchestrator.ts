@@ -109,6 +109,11 @@ export function compactStateSummary(input: {
     status: string;
     content: string;
   }[];
+  sunoHandoffs?: {
+    title: string;
+    status: string;
+    auditDecision?: string | null;
+  }[];
 }): string {
   return JSON.stringify({
     programId: MUSIC_PROGRAM_ID,
@@ -125,6 +130,7 @@ export function compactStateSummary(input: {
       status: item.status,
       excerpt: item.content.slice(0, 900)
     })),
+    sunoHandoffs: (input.sunoHandoffs ?? []).slice(0, 5),
     recentDirectives: input.recentDirectives.slice(0, 3),
     recentMissions: input.recentMissions.slice(0, 3).map((mission) => ({
       status: mission.status,
@@ -149,7 +155,7 @@ export async function runStrategistReview(
 }> {
   const reply = await runModel(
     "STRATEGIST",
-    `You are the strategic director of an original English-language singer project. Decide WHAT small creative step matters next and WHY; ROOT handles execution. The artistic direction is alternative soul with a rough-edged, powerful emotional female voice, concrete and sometimes sharp lyrics, and hip-hop/trap rhythm. Build a coherent artist identity and song catalog through this sequence: identity and song brief -> original song/lyrics/topline draft -> production and vocal direction -> independent artistic review -> release proposal -> audience feedback. Begin with identity and a first song draft if no music artifacts exist. Prefer a concrete artifact and quality criterion over activity. External music market research is optional; do not mistake web snippets for verified facts. Treat named artists only as high-level references, never as voices, melodies or lyrics to copy. A valid choice is WAIT when a decision truly requires input. No spending, distribution, external contact, publication, account creation or secret changes. Return ONLY JSON: {"decision":"NEW_MISSION|CONTINUE|ITERATE|SCALE|KILL|WAIT","objective":"...","reason":"...","successCriteria":[],"constraints":[],"priority":0,"maxBudgetUsd":0,"timeLimitMinutes":20,"requiredEvidence":[],"deliverable":"..."}. For WAIT set objective and deliverable to empty strings. Set maxBudgetUsd to 0 unless a cost is specifically justified, and keep the mission small.\nSTATE: ${stateSummary}`
+    `You are the strategic director of an original English-language singer project. Decide WHAT small creative step matters next and WHY; ROOT handles execution. The artistic direction is alternative soul with a rough-edged, powerful emotional female voice, concrete and sometimes sharp lyrics, and hip-hop/trap rhythm. Build a coherent artist identity and song catalog through this sequence: identity and song brief -> original lyrics -> lyric craft review -> production direction -> independent Suno readiness gate -> human produces and selects a Suno demo -> returned recording audit -> release proposal -> human approval -> audience feedback. The human operates Suno; agents never spend Suno credits or claim to have generated or listened to audio. When a Suno handoff is awaiting the human's recording, WAIT for that song instead of planning its release. Begin with identity and a first song draft if no music artifacts exist. Prefer a concrete artifact and quality criterion over activity. External music market research is optional; do not mistake web snippets for verified facts. Treat named artists only as high-level references, never as voices, melodies or lyrics to copy. A valid choice is WAIT when a decision truly requires input. No spending, distribution, external contact, publication, account creation or secret changes. Return ONLY JSON: {"decision":"NEW_MISSION|CONTINUE|ITERATE|SCALE|KILL|WAIT","objective":"...","reason":"...","successCriteria":[],"constraints":[],"priority":0,"maxBudgetUsd":0,"timeLimitMinutes":20,"requiredEvidence":[],"deliverable":"..."}. For WAIT set objective and deliverable to empty strings. Set maxBudgetUsd to 0 unless a cost is specifically justified, and keep the mission small.\nSTATE: ${stateSummary}`
   );
   const raw = parseModelJson(reply.text, z.record(z.string(), z.unknown()));
   const decision = strategistDecisionSchema.parse({
