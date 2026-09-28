@@ -185,12 +185,66 @@ export async function readPublicPage(
   ) {
     return null;
   }
-  const html = (await response.text()).slice(0, 30000);
+  const html = (await response.text()).slice(0, 150000);
+  const url = new URL(response.url);
+  if (
+    ["freelancermap.de", "www.freelancermap.de"].includes(url.hostname) &&
+    url.pathname.startsWith("/projekt/")
+  ) {
+    const embedded = html.match(
+      /<script\b(?=[^>]*data-component-name=["']ProjectShow["'])[^>]*>([\s\S]*?)<\/script>/i
+    )?.[1];
+    if (embedded) {
+      try {
+        const raw: unknown = JSON.parse(embedded);
+        const project =
+          raw && typeof raw === "object" && "project" in raw
+            ? raw.project
+            : null;
+        if (project && typeof project === "object") {
+          const fields = project as Record<string, unknown>;
+          const title =
+            typeof fields.title === "string" ? fields.title : "Public project";
+          const description =
+            typeof fields.description === "string"
+              ? decodeXml(fields.description).slice(0, 1200)
+              : "";
+          const created =
+            typeof fields.created === "string" ? fields.created : "unknown";
+          const budget = fields.budget;
+          let budgetText = "Budget: not stated";
+          if (budget && typeof budget === "object") {
+            const amount = (budget as Record<string, unknown>).amountInCents;
+            const currency = (budget as Record<string, unknown>).currency;
+            const code =
+              currency && typeof currency === "object"
+                ? (currency as Record<string, unknown>).code
+                : null;
+            if (typeof amount === "number" && typeof code === "string")
+              budgetText = `Budget: ${amount / 100} ${code}`;
+          }
+          return {
+            sourceUrl: response.url,
+            title: decodeXml(title).slice(0, 300),
+            observation:
+              `Project date: ${created}. ${budgetText}. Description: ${description}`.slice(
+                0,
+                1600
+              ),
+            retrievedAt: new Date().toISOString()
+          };
+        }
+      } catch {
+        // Fall back to generic public-page text when embedded data changes.
+      }
+    }
+  }
   const title = decodeXml(
     html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "Public page"
   );
   const observation = decodeXml(
     html
+      .slice(0, 30000)
       .replace(/<script[\s\S]*?<\/script>/gi, " ")
       .replace(/<style[\s\S]*?<\/style>/gi, " ")
   ).slice(0, 1600);

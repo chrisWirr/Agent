@@ -54,7 +54,7 @@ async function selectModel(env: Env) {
       apiKey: env.OPENCLAW_GATEWAY_TOKEN
     });
 
-    return openclaw("openclaw/default");
+    return openclaw("openclaw/main");
   } catch {
     console.warn("OpenClaw is unavailable; using Workers AI");
     return fallback;
@@ -131,6 +131,8 @@ export class ChatAgent extends AIChatAgent<Env> {
             modelCalls: missions[0].modelCalls,
             toolCalls: missions[0].toolCalls,
             actualCostUsd: missions[0].actualCostUsd,
+            providerFailures: missions[0].providerFailures,
+            routes: missions[0].routes,
             evidenceCount: missions[0].evidence.length,
             evidence: missions[0].evidence.slice(0, 5),
             humanGates: missions[0].humanGates,
@@ -147,6 +149,175 @@ export class ChatAgent extends AIChatAgent<Env> {
         : null,
       recentEvents: store.recentEvents()
     };
+  }
+
+  async queueExternalDirective(input: unknown) {
+    const directive = directiveSchema.parse(input);
+    if (directive.decision === "WAIT" || directive.decision === "KILL")
+      return { queued: false, reason: "NO_MISSION_REQUESTED" };
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    if (store.getDirective(directive.directiveId))
+      return { queued: false, reason: "DUPLICATE_DIRECTIVE" };
+    if (store.currentMission())
+      return { queued: false, reason: "MISSION_IN_PROGRESS" };
+    if (
+      store.countEventsSince(
+        "EXTERNAL_DIRECTIVE_QUEUED",
+        Date.now() - 24 * 60 * 60 * 1000
+      ) >= 1
+    )
+      return { queued: false, reason: "EXTERNAL_DIRECTIVE_LIMIT_REACHED" };
+    store.saveDirective(directive);
+    store.recordEvent("EXTERNAL_DIRECTIVE_QUEUED", {
+      directiveId: directive.directiveId
+    });
+    await this.schedule(
+      10,
+      "scheduledExternalDirective",
+      directive.directiveId,
+      {
+        idempotent: true
+      }
+    );
+    return { queued: true, directiveId: directive.directiveId };
+  }
+
+  async scheduledExternalDirective() {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    store.expireStaleMissions(35 * 60 * 1000);
+    const event = store.latestEvent("EXTERNAL_DIRECTIVE_QUEUED");
+    if (!event) return;
+    let directiveId: string;
+    try {
+      const payload: unknown = JSON.parse(event.payload);
+      if (
+        !payload ||
+        typeof payload !== "object" ||
+        !("directiveId" in payload) ||
+        typeof payload.directiveId !== "string"
+      )
+        return;
+      directiveId = payload.directiveId;
+    } catch {
+      return;
+    }
+    const directive = store.getDirective(directiveId);
+    if (!directive) return;
+    if (store.currentMission() || !store.tryAcquireReview()) {
+      await this.schedule(120, "scheduledExternalDirective", directiveId, {
+        idempotent: true
+      });
+      return;
+    }
+    let activeDirectiveId: string | null = null;
+    try {
+      if (!store.tryStartMission(directiveId)) return;
+      activeDirectiveId = directiveId;
+      const result = await runRootMission(
+        directive,
+        {
+          runModel: createModelRunner(this.env),
+          search: (query) =>
+            searchViaBridge(
+              query,
+              this.env.OPENCLAW_BASE_URL,
+              this.env.OPENCLAW_GATEWAY_TOKEN
+            ),
+          readPage: (url) =>
+            readViaBridge(
+              url,
+              this.env.OPENCLAW_BASE_URL,
+              this.env.OPENCLAW_GATEWAY_TOKEN
+            )
+        },
+        DEFAULT_LIMITS,
+        (name, payload) => store.recordEvent(name, payload)
+      );
+      store.saveMission(result);
+      activeDirectiveId = null;
+      for (const route of result.routes) {
+        if (route.fallbackUsed)
+          store.recordEvent("FALLBACK_USED", {
+            role: "MISSION",
+            reason: route.fallbackReason
+          });
+      }
+    } catch {
+      if (activeDirectiveId) store.failMission(activeDirectiveId);
+      store.recordEvent("EXTERNAL_DIRECTIVE_FAILED", { directiveId });
+    } finally {
+      store.releaseReview();
+    }
+  }
+
+  async retryExternalDirective() {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    if (store.currentMission())
+      return { queued: false, reason: "MISSION_IN_PROGRESS" };
+    if (
+      store.countEventsSince(
+        "EXTERNAL_DIRECTIVE_RETRIED",
+        Date.now() - 24 * 60 * 60 * 1000
+      ) >= 5
+    )
+      return { queued: false, reason: "RETRY_LIMIT_REACHED" };
+    const event = store.latestEvent("EXTERNAL_DIRECTIVE_QUEUED");
+    const previous = store.recentMissions()[0];
+    if (
+      !event ||
+      !previous ||
+      !["FAILED", "HUMAN_GATE_REQUIRED"].includes(previous.status)
+    )
+      return { queued: false, reason: "NO_FAILED_EXTERNAL_MISSION" };
+    let originalId: string;
+    try {
+      const payload: unknown = JSON.parse(event.payload);
+      if (
+        !payload ||
+        typeof payload !== "object" ||
+        !("directiveId" in payload) ||
+        typeof payload.directiveId !== "string"
+      )
+        return { queued: false, reason: "INVALID_QUEUED_DIRECTIVE" };
+      originalId = payload.directiveId;
+    } catch {
+      return { queued: false, reason: "INVALID_QUEUED_DIRECTIVE" };
+    }
+    if (
+      previous.directiveId !== originalId ||
+      (previous.status === "FAILED" && previous.evidence.length > 0)
+    )
+      return { queued: false, reason: "NO_FAILED_EXTERNAL_MISSION" };
+    const original = store.getDirective(originalId);
+    if (!original) return { queued: false, reason: "DIRECTIVE_NOT_FOUND" };
+    const directive = directiveSchema.parse({
+      ...original,
+      directiveId: crypto.randomUUID(),
+      reason:
+        `${original.reason} Reprüfung nach Korrektur der Originalseiten-Auswertung.`.slice(
+          0,
+          1200
+        ),
+      createdAt: new Date().toISOString()
+    });
+    store.saveDirective(directive);
+    store.recordEvent("EXTERNAL_DIRECTIVE_RETRIED", {
+      originalId,
+      directiveId: directive.directiveId
+    });
+    store.recordEvent("EXTERNAL_DIRECTIVE_QUEUED", {
+      directiveId: directive.directiveId
+    });
+    await this.schedule(
+      10,
+      "scheduledExternalDirective",
+      directive.directiveId,
+      { idempotent: true }
+    );
+    return { queued: true, directiveId: directive.directiveId };
   }
 
   async retryFailedResearchMission() {
@@ -564,10 +735,17 @@ export default {
       if (
         !(
           (request.method === "GET" &&
-            ["/admin/autonomy", "/admin/search-diagnostics"].includes(
-              pathname
-            )) ||
-          (request.method === "POST" && pathname === "/admin/retry-research")
+            [
+              "/admin/autonomy",
+              "/admin/bridge-health",
+              "/admin/search-diagnostics"
+            ].includes(pathname)) ||
+          (request.method === "POST" && pathname === "/admin/retry-research") ||
+          (request.method === "POST" &&
+            [
+              "/admin/external-directive",
+              "/admin/retry-external-directive"
+            ].includes(pathname))
         ) ||
         !env.AUTONOMY_ADMIN_TOKEN ||
         token !== env.AUTONOMY_ADMIN_TOKEN
@@ -581,10 +759,60 @@ export default {
           headers: { "cache-control": "no-store" }
         });
       }
+      if (pathname === "/admin/bridge-health") {
+        if (!env.OPENCLAW_BASE_URL || !env.OPENCLAW_GATEWAY_TOKEN)
+          return Response.json({ configured: false });
+        const started = Date.now();
+        try {
+          const response = await fetch(`${env.OPENCLAW_BASE_URL}/v1/models`, {
+            headers: {
+              authorization: `Bearer ${env.OPENCLAW_GATEWAY_TOKEN}`
+            },
+            signal: AbortSignal.timeout(5000)
+          });
+          return Response.json({
+            configured: true,
+            reachable: response.ok,
+            status: response.status,
+            elapsedMs: Date.now() - started
+          });
+        } catch (error) {
+          return Response.json({
+            configured: true,
+            reachable: false,
+            error: error instanceof Error ? error.name : "UNKNOWN",
+            elapsedMs: Date.now() - started
+          });
+        }
+      }
       if (pathname === "/admin/retry-research") {
         const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
         const result = await stub.retryFailedResearchMission();
         return Response.json(result, {
+          headers: { "cache-control": "no-store" }
+        });
+      }
+      if (pathname === "/admin/external-directive") {
+        let payload: unknown;
+        try {
+          const body = await request.text();
+          if (body.length > 12000)
+            return Response.json(
+              { error: "PAYLOAD_TOO_LARGE" },
+              { status: 413 }
+            );
+          payload = directiveSchema.parse(JSON.parse(body));
+        } catch {
+          return Response.json({ error: "INVALID_DIRECTIVE" }, { status: 400 });
+        }
+        const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
+        return Response.json(await stub.queueExternalDirective(payload), {
+          headers: { "cache-control": "no-store" }
+        });
+      }
+      if (pathname === "/admin/retry-external-directive") {
+        const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
+        return Response.json(await stub.retryExternalDirective(), {
           headers: { "cache-control": "no-store" }
         });
       }

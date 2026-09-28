@@ -28,7 +28,7 @@ export type AutonomyLimits = {
 export const DEFAULT_LIMITS: AutonomyLimits = {
   maxSpecialistsPerMission: 2,
   maxModelCallsPerSpecialist: 1,
-  maxToolCallsPerSpecialist: 3,
+  maxToolCallsPerSpecialist: 4,
   maxStrategistCallsPerDay: 2,
   maxMissionsPerDay: 1,
   reviewCooldownMinutes: 60
@@ -61,13 +61,17 @@ export function parseRootPlan(text: string): RootPlan {
     specialists: specialistItems.map((item) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return item;
       const spec = item as Record<string, unknown>;
+      const searchQuery = Array.isArray(spec.searchQuery)
+        ? spec.searchQuery.find(
+            (query) => typeof query === "string" && query.trim().length >= 3
+          )
+        : spec.searchQuery;
       return {
         ...spec,
         task: boundedText(spec.task, 1200),
         searchQuery:
-          typeof spec.searchQuery === "string" &&
-          spec.searchQuery.trim().length >= 3
-            ? boundedText(spec.searchQuery, 160)
+          typeof searchQuery === "string" && searchQuery.trim().length >= 3
+            ? boundedText(searchQuery, 160)
             : undefined,
         reasonForDelegation: boundedText(spec.reasonForDelegation, 500),
         expectedValueOfDelegation: boundedText(
@@ -172,7 +176,7 @@ export async function runRootMission(
     modelCalls++;
     const planReply = await deps.runModel(
       "ROOT",
-      `You are ROOT. Choose HOW to execute this STRATEGIST directive. Delegate only if valuable. At most ${limits.maxSpecialistsPerMission} temporary specialists. RESEARCHER may use webSearch and readPage; other roles have no external tools in V1. Never spend, contact, publish, create accounts, destroy, or change secrets; put a specific needed action in humanGates. Return ONLY one concise JSON object with: approach (string, max 500 chars), specialists (array; each has role, task max 500 chars, searchQuery (3-8 relevant search terms), reasonForDelegation, expectedValueOfDelegation, allowedTools), directFindings (array of strings; empty if no verified facts), humanGates (array of objects with proposedAction, reason, expectedBenefit, risk, exactApprovalNeeded; empty if none). No prose before or after JSON.\nDIRECTIVE: ${JSON.stringify(validDirective)}`
+      `You are ROOT. Choose HOW to execute this STRATEGIST directive. You have no direct web tools. If requiredEvidence is nonempty, delegate public evidence gathering to at least one RESEARCHER. At most ${limits.maxSpecialistsPerMission} temporary specialists. RESEARCHER may use webSearch and readPage; other roles have no external tools in V1. Never spend, contact, publish, create accounts, destroy, or change secrets; put a specific needed action in humanGates. Return ONLY one compact JSON object, under 500 words, with: approach (string, max 500 chars), specialists (array; each has role, task max 500 chars, searchQuery (one string of 3-8 relevant search terms, never an array; target a specific public job post or discussion thread with a site: query, not a vendor page), reasonForDelegation, expectedValueOfDelegation, allowedTools), directFindings (array of strings; empty unless facts were verified with tools), humanGates (array of objects with proposedAction, reason, expectedBenefit, risk, exactApprovalNeeded; empty if none). No prose before or after JSON.\nDIRECTIVE: ${JSON.stringify(validDirective)}`
     );
     rootRoute = planReply.route;
     rootRoutes.push(planReply.route);
@@ -188,7 +192,7 @@ export async function runRootMission(
       modelCalls++;
       const repair = await deps.runModel(
         "ROOT",
-        `Return ONLY valid compact JSON for this directive. Keys: approach:string, specialists:array of at most ${limits.maxSpecialistsPerMission} objects with role,task,searchQuery,reasonForDelegation,expectedValueOfDelegation,allowedTools; directFindings:array of strings; humanGates:array of objects with proposedAction,reason,expectedBenefit,risk,exactApprovalNeeded. Use empty arrays when none. Keep every string short. No markdown or explanation. Directive: ${JSON.stringify(validDirective)}`
+        `Return ONLY valid compact JSON under 400 words for this directive. ROOT has no direct web tools; required public evidence needs a RESEARCHER with allowedTools ["webSearch","readPage"]. Keys: approach:string, specialists:array of at most ${limits.maxSpecialistsPerMission} objects with role,task,searchQuery,reasonForDelegation,expectedValueOfDelegation,allowedTools (searchQuery must be one string targeting a specific public job post or discussion thread using site:); directFindings:array of strings; humanGates:array of objects with proposedAction,reason,expectedBenefit,risk,exactApprovalNeeded. Use empty arrays when none. Keep every string short. No markdown or explanation. Directive: ${JSON.stringify(validDirective)}`
       );
       rootRoute = repair.route;
       rootRoutes.push(repair.route);
@@ -313,8 +317,16 @@ export async function runRootMission(
         .join("; "),
       routes: [...rootRoutes, ...specialists.map((result) => result.route)]
     });
-  } catch {
-    providerFailures.push("ROOT_PLAN_FAILED");
+  } catch (error) {
+    const failureType =
+      error instanceof z.ZodError
+        ? `ROOT_PLAN_SCHEMA:${error.issues.map((issue) => issue.path.join(".")).join(",")}`
+        : error instanceof SyntaxError
+          ? "ROOT_PLAN_INVALID_JSON"
+          : error instanceof Error && error.message === "MODEL_REQUEST_FAILED"
+            ? "ROOT_MODEL_REQUEST_FAILED"
+            : "ROOT_PLAN_FAILED";
+    providerFailures.push(failureType);
     return missionResultSchema.parse({
       missionId,
       directiveId: validDirective.directiveId,

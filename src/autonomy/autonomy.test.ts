@@ -8,7 +8,12 @@ import {
   runStrategistReview,
   DEFAULT_LIMITS
 } from "./orchestrator";
-import { readViaBridge, searchPublicWeb, searchViaBridge } from "./research";
+import {
+  readPublicPage,
+  readViaBridge,
+  searchPublicWeb,
+  searchViaBridge
+} from "./research";
 import { spawnSpecialist, type ModelRunner } from "./runtime";
 import {
   directiveSchema,
@@ -26,6 +31,10 @@ test("ROOT plan normalization accepts verbose model output without widening perm
         {
           role: "RESEARCHER",
           task: "x".repeat(1400),
+          searchQuery: [
+            "site:freelancermap.de/projekt CSV Produktdaten",
+            "CSV Datenpflege"
+          ],
           reasonForDelegation: "Needs retrieval",
           expectedValueOfDelegation: "Public evidence",
           allowedTools: ["webSearch"]
@@ -36,6 +45,10 @@ test("ROOT plan normalization accepts verbose model output without widening perm
     })
   );
   assert.equal(plan.specialists[0].task.length, 1200);
+  assert.equal(
+    plan.specialists[0].searchQuery,
+    "site:freelancermap.de/projekt CSV Produktdaten"
+  );
   assert.equal(plan.directFindings.length, 6);
   assert.deepEqual(plan.humanGates, []);
   assert.throws(() =>
@@ -59,7 +72,7 @@ test("ROOT plan normalization accepts verbose model output without widening perm
 });
 
 const unknownRoute: Route = {
-  requestedModel: "openclaw/default",
+  requestedModel: "openclaw/main",
   actualModel: "UNKNOWN",
   provider: "openclaw",
   route: "linux-openclaw-bridge",
@@ -169,6 +182,76 @@ test("RESEARCHER uses only allowed tools and preserves real source URLs", async 
     "https://example.org/source"
   );
   assert.equal(result.route.actualModel, "UNKNOWN");
+});
+
+test("RESEARCHER counts read pages as evidence, not search leads", async () => {
+  const result = await spawnSpecialist(
+    {
+      agentId: "reader",
+      role: "RESEARCHER",
+      objective: "Verify public demand",
+      task: "Read original sources",
+      searchQuery: "site:example.org CSV job",
+      context: "",
+      allowedTools: ["webSearch", "readPage"],
+      maxModelCalls: 1,
+      maxToolCalls: 3,
+      timeoutMs: 5000,
+      maxBudgetUsd: 0,
+      parentMissionId: "m1",
+      delegationDepth: 2,
+      reasonForDelegation: "Need original pages",
+      expectedValueOfDelegation: "Verified evidence"
+    },
+    {
+      search: async () => [
+        {
+          sourceUrl: "https://example.org/lead",
+          title: "Search result",
+          observation: "Unverified snippet",
+          retrievedAt: new Date().toISOString()
+        }
+      ],
+      readPage: async () => null,
+      runModel: async () => ({
+        text: JSON.stringify({
+          summary: "Original page unavailable",
+          inferences: [],
+          assumptions: [],
+          unknowns: ["Demand unverified"],
+          recommendedNextAction: "Try another source",
+          limitations: []
+        }),
+        route: unknownRoute
+      })
+    }
+  );
+  assert.equal(result.status, "PARTIAL");
+  assert.deepEqual(result.observedEvidence, []);
+});
+
+test("public project reader extracts the actual description and stated budget", async () => {
+  const sourceUrl = "https://www.freelancermap.de/projekt/example";
+  const embedded = JSON.stringify({
+    project: {
+      title: "CSV Produktdaten bereinigen",
+      description: "<p>Wir suchen Hilfe für unseren Shop.</p>",
+      created: "2026-09-01T12:00:00+02:00",
+      budget: { amountInCents: 300000, currency: { code: "EUR" } }
+    }
+  });
+  const response = new Response(
+    `<html><script data-component-name="ProjectShow" type="application/json">${embedded}</script></html>`,
+    { headers: { "content-type": "text/html" } }
+  );
+  Object.defineProperty(response, "url", { value: sourceUrl });
+  const page = await readPublicPage(
+    sourceUrl,
+    (async () => response) as typeof fetch
+  );
+  assert.match(page?.observation ?? "", /3000 EUR/);
+  assert.match(page?.observation ?? "", /Wir suchen Hilfe/);
+  assert.doesNotMatch(page?.observation ?? "", /<p>/);
 });
 
 test("invalid role permissions and delegation depth fail safely", async () => {

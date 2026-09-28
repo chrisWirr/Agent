@@ -24,7 +24,7 @@ const provider = createOpenAICompatible({
 });
 const runModel: ModelRunner = async (_role, prompt, signal) => {
   const response = await generateText({
-    model: provider("openclaw/default"),
+    model: provider("openclaw/main"),
     prompt,
     maxOutputTokens: 1500,
     maxRetries: 0,
@@ -33,7 +33,7 @@ const runModel: ModelRunner = async (_role, prompt, signal) => {
   return {
     text: response.text,
     route: {
-      requestedModel: "openclaw/default",
+      requestedModel: "openclaw/main",
       actualModel: "UNKNOWN",
       provider: "openclaw",
       route: "linux-openclaw-bridge",

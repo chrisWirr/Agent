@@ -107,6 +107,13 @@ export class AutonomyStore {
     });
   }
 
+  getDirective(directiveId: string): Directive | null {
+    const row = this
+      .sql<EntryRow>`SELECT id, payload, created_at, status FROM autonomy_entries
+      WHERE id = ${directiveId} AND kind = 'directive' LIMIT 1`[0];
+    return row ? (JSON.parse(row.payload) as Directive) : null;
+  }
+
   tryStartMission(directiveId: string): boolean {
     const id = `mission:${directiveId}`;
     const now = Date.now();

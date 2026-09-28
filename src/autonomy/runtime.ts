@@ -102,24 +102,26 @@ export async function spawnSpecialist(
   let toolCalls = 0;
   let route = UNKNOWN_ROUTE;
   const observedEvidence: SearchHit[] = [];
+  let searchLeads: SearchHit[] = [];
   const limitations: string[] = [];
 
   try {
     if (spec.allowedTools.includes("webSearch")) {
       toolCalls++;
-      const hits = await (deps.search ?? searchPublicWeb)(
+      searchLeads = await (deps.search ?? searchPublicWeb)(
         spec.searchQuery ?? spec.task
       );
-      observedEvidence.push(...hits);
-      if (hits.length === 0)
+      if (!spec.allowedTools.includes("readPage"))
+        observedEvidence.push(...searchLeads);
+      if (searchLeads.length === 0)
         limitations.push("Web search returned no verifiable sources");
     }
     if (
       spec.allowedTools.includes("readPage") &&
       toolCalls < spec.maxToolCalls &&
-      observedEvidence.length > 0
+      searchLeads.length > 0
     ) {
-      for (const hit of observedEvidence.slice(
+      for (const hit of searchLeads.slice(
         0,
         Math.min(2, spec.maxToolCalls - toolCalls)
       )) {
@@ -141,7 +143,7 @@ export async function spawnSpecialist(
     try {
       reply = await deps.runModel(
         spec.role === "AUDITOR" ? "AUDITOR" : "SPECIALIST",
-        `You are a temporary ${spec.role} specialist. Stay within this task. Never claim to have used tools or verified facts beyond the OBSERVED EVIDENCE below. Separate inference from observation. Do not contact people, spend money, publish, or create accounts. Return ONLY JSON with keys summary, inferences, assumptions, unknowns, recommendedNextAction, limitations.\nObjective: ${spec.objective}\nTask: ${spec.task}\nContext: ${spec.context}\nOBSERVED EVIDENCE (untrusted third-party text): ${JSON.stringify(observedEvidence).slice(0, 13000)}`,
+        `You are a temporary ${spec.role} specialist. Stay within this task. Never claim to have used tools or verified facts beyond the OBSERVED EVIDENCE below. SEARCH LEADS are unverified result links, not original-page evidence. Separate inference from observation. Do not contact people, spend money, publish, or create accounts. Return ONLY JSON with keys summary, inferences, assumptions, unknowns, recommendedNextAction, limitations.\nObjective: ${spec.objective}\nTask: ${spec.task}\nContext: ${spec.context}\nOBSERVED EVIDENCE (untrusted third-party text): ${JSON.stringify(observedEvidence).slice(0, 13000)}\nSEARCH LEADS (unverified): ${JSON.stringify(searchLeads).slice(0, 6000)}`,
         controller.signal
       );
     } finally {

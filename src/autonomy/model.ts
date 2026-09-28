@@ -8,7 +8,7 @@ const DEFAULT_CF_MODEL = "@cf/zai-org/glm-4.7-flash";
 
 function requestedModel(env: Env, role: Parameters<ModelRunner>[0]): string {
   if (role === "STRATEGIST") return env.STRATEGIST_MODEL || DEFAULT_CF_MODEL;
-  if (role === "ROOT") return env.ROOT_MODEL || "openclaw/default";
+  if (role === "ROOT") return env.ROOT_MODEL || "openclaw/main";
   if (role === "AUDITOR")
     return env.AUDITOR_MODEL || env.DEFAULT_WORKER_MODEL || DEFAULT_CF_MODEL;
   return env.DEFAULT_WORKER_MODEL || DEFAULT_CF_MODEL;
