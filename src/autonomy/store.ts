@@ -198,9 +198,10 @@ export class AutonomyStore {
     }
     if (programId === MUSIC_PROGRAM_ID) {
       for (const run of result.agentRuns) {
-        const kind = musicArtifactKind(run.role);
-        if (!kind || run.status === "FAILED") continue;
+        if (run.status === "FAILED") continue;
         run.artifacts.slice(0, 2).forEach((content, index) => {
+          const kind = musicArtifactKind(run.role, content);
+          if (!kind) return;
           const artifactId = `${result.missionId}:${run.agentId}:${index}`;
           this.sql`INSERT OR IGNORE INTO music_artifacts
             (id, mission_id, kind, title, content, status, created_at)
@@ -213,7 +214,10 @@ export class AutonomyStore {
   recentMusicArtifacts(): MusicArtifact[] {
     return this
       .sql<MusicArtifact>`SELECT id, mission_id, kind, title, content, status, created_at
-      FROM music_artifacts ORDER BY created_at DESC LIMIT 20`;
+      FROM music_artifacts ORDER BY created_at DESC LIMIT 20`.map((item) => ({
+      ...item,
+      kind: musicArtifactKind("", item.content) ?? item.kind
+    }));
   }
 
   recentDirectives(): Directive[] {

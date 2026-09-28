@@ -35,7 +35,24 @@ export const MUSIC_SPECIALIST_ROLES = [
   "AUDITOR"
 ] as const;
 
-export function musicArtifactKind(role: string): string | null {
+export function musicArtifactKind(
+  role: string,
+  content?: string
+): string | null {
+  if (content?.trimStart().startsWith("{")) {
+    try {
+      const parsed: unknown = JSON.parse(content);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        "kind" in parsed &&
+        parsed.kind === "artist_identity_card"
+      )
+        return "ARTIST_PROFILE";
+    } catch {
+      // Plain-text drafts continue to use the specialist's artifact type.
+    }
+  }
   switch (role) {
     case "SONGWRITER":
       return "SONG_DRAFT";

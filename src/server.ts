@@ -434,8 +434,9 @@ export class ChatAgent extends AIChatAgent<Env> {
     const lastFailure = store.latestEvent("MUSIC_STRATEGIST_REVIEW_FAILED");
     if (store.currentMission()) return;
     if (
-      store.countEventsSince("MUSIC_STRATEGIST_REVIEW", dayAgo) >=
-      DEFAULT_LIMITS.maxStrategistCallsPerDay
+      store.countEventsSince("MUSIC_STRATEGIST_REVIEW_SUCCEEDED", dayAgo) >=
+        DEFAULT_LIMITS.maxStrategistCallsPerDay ||
+      store.countEventsSince("MUSIC_STRATEGIST_REVIEW", dayAgo) >= 6
     )
       return;
     if (
@@ -468,6 +469,9 @@ export class ChatAgent extends AIChatAgent<Env> {
       });
       const runner = createModelRunner(this.env);
       const { directive, route } = await runStrategistReview(summary, runner);
+      store.recordEvent("MUSIC_STRATEGIST_REVIEW_SUCCEEDED", {
+        programId: MUSIC_PROGRAM_ID
+      });
       store.saveDirective(directive);
       if (route.fallbackUsed)
         store.recordEvent("FALLBACK_USED", {
