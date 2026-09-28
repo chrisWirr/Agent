@@ -4,6 +4,7 @@ import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { MCPServersState } from "agents";
 import type { ChatAgent } from "./server";
+import StudioPage from "./studio";
 import {
   Badge,
   Button,
@@ -505,6 +506,12 @@ function Chat() {
               />
             </div>
             <ThemeToggle />
+            <a
+              href="/studio"
+              className="rounded-lg border border-kumo-line px-3 py-1.5 text-sm font-medium text-kumo-default hover:bg-kumo-control"
+            >
+              Workspace
+            </a>
             <div className="relative" ref={mcpPanelRef}>
               <Button
                 variant="secondary"
@@ -958,6 +965,7 @@ function Chat() {
 }
 
 export default function App() {
+  if (window.location.pathname === "/studio") return <StudioPage />;
   return (
     <Toasty>
       <Suspense
