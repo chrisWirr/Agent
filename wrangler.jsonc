@@ -7,7 +7,8 @@
   "vars": {
     "STRATEGIST_MODEL": "openclaw/strategist",
     "ROOT_MODEL": "openclaw/main",
-    "DEFAULT_WORKER_MODEL": "openclaw/main"
+    "DEFAULT_WORKER_MODEL": "openclaw/main",
+    "LYRICS_EXPERT_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
   },
   "ai": { "binding": "AI", "remote": true },
   "assets": {

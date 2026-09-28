@@ -19,13 +19,14 @@ import {
   runRootMission,
   runStrategistReview
 } from "./autonomy/orchestrator";
+import { spawnSpecialist } from "./autonomy/runtime";
 import { AutonomyStore } from "./autonomy/store";
 import {
   readViaBridge,
   searchPublicWeb,
   searchViaBridge
 } from "./autonomy/research";
-import { directiveSchema } from "./autonomy/schemas";
+import { directiveSchema, missionResultSchema } from "./autonomy/schemas";
 import { ARTIST_BRIEF, MUSIC_PROGRAM_ID } from "./music/project";
 
 async function selectModel(env: Env) {
@@ -172,6 +173,149 @@ export class ChatAgent extends AIChatAgent<Env> {
       lastDirective: store.recentDirectives()[0] ?? null,
       lastMission: store.recentMissions()[0] ?? null
     };
+  }
+
+  async queueLyricsReview() {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const song = store
+      .recentMusicArtifacts()
+      .find((artifact) => artifact.kind === "SONG_DRAFT");
+    if (!song) return { queued: false, reason: "NO_SONG_DRAFT" };
+    const baseDirectiveId = `lyrics-review:${song.id}`;
+    let directiveId = baseDirectiveId;
+    for (const suffix of [":retry", ":retry-2"]) {
+      if (!store.getDirective(directiveId)) break;
+      const prior = store
+        .recentMissions()
+        .find((mission) => mission.directiveId === directiveId);
+      if (prior?.status !== "FAILED" && prior?.status !== "PARTIAL")
+        return { queued: false, reason: "ALREADY_REVIEWED_OR_QUEUED" };
+      directiveId = `${baseDirectiveId}${suffix}`;
+    }
+    if (store.getDirective(directiveId))
+      return { queued: false, reason: "REVIEW_ATTEMPTS_EXHAUSTED" };
+    const directive = directiveSchema.parse({
+      directiveId,
+      programId: MUSIC_PROGRAM_ID,
+      decision: "ITERATE",
+      objective: "Independently review and revise the existing song lyrics",
+      reason: "The first song needs a dedicated English-language lyric editor.",
+      successCriteria: [
+        "Line-specific critique",
+        "Complete revised original lyrics"
+      ],
+      constraints: ["No external publication or contact"],
+      priority: 2,
+      maxBudgetUsd: 0,
+      timeLimitMinutes: 5,
+      requiredEvidence: [],
+      deliverable: "Lyric review and full song revision",
+      createdAt: new Date().toISOString()
+    });
+    store.saveDirective(directive);
+    store.recordEvent("MUSIC_LYRICS_REVIEW_QUEUED", {
+      directiveId,
+      sourceArtifactId: song.id
+    });
+    await this.schedule(10, "scheduledLyricsReview", directiveId, {
+      idempotent: true
+    });
+    return { queued: true, directiveId };
+  }
+
+  async scheduledLyricsReview() {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    store.expireStaleMissions(35 * 60 * 1000);
+    const event = store.latestEvent("MUSIC_LYRICS_REVIEW_QUEUED");
+    if (!event) return;
+    const payload = JSON.parse(event.payload) as {
+      directiveId: string;
+      sourceArtifactId: string;
+    };
+    const directive = store.getDirective(payload.directiveId);
+    const song = store
+      .recentMusicArtifacts()
+      .find((artifact) => artifact.id === payload.sourceArtifactId);
+    if (!directive || !song || song.kind !== "SONG_DRAFT") return;
+    if (store.currentMission() || !store.tryAcquireReview()) {
+      await this.schedule(120, "scheduledLyricsReview", payload.directiveId, {
+        idempotent: true
+      });
+      return;
+    }
+    let started = false;
+    try {
+      if (!store.tryStartMission(payload.directiveId)) return;
+      started = true;
+      const missionId = crypto.randomUUID();
+      const startTime = Date.now();
+      store.recordEvent("AGENT_SPAWNED", {
+        missionId,
+        role: "LYRICS_EXPERT"
+      });
+      const run = await spawnSpecialist(
+        {
+          agentId: crypto.randomUUID(),
+          role: "LYRICS_EXPERT",
+          objective: directive.objective,
+          task: "Give a candid, line-specific lyric critique and a complete revised version of the supplied song.",
+          context: JSON.stringify({
+            artistBrief: ARTIST_BRIEF,
+            sourceArtifact: { id: song.id, content: song.content }
+          }).slice(0, 11000),
+          allowedTools: [],
+          maxModelCalls: 1,
+          maxToolCalls: 0,
+          timeoutMs: 120000,
+          maxBudgetUsd: 0,
+          parentMissionId: missionId,
+          delegationDepth: 2,
+          reasonForDelegation:
+            "The existing song needs an independent lyric craft review.",
+          expectedValueOfDelegation:
+            "Actionable critique and a singable second draft."
+        },
+        { runModel: createModelRunner(this.env) }
+      );
+      store.recordEvent(
+        run.status === "FAILED" ? "AGENT_FAILED" : "AGENT_COMPLETED",
+        { missionId, role: run.role, status: run.status }
+      );
+      store.saveMission(
+        missionResultSchema.parse({
+          missionId,
+          directiveId: payload.directiveId,
+          status: run.status,
+          decisionRecommendation: "ITERATE",
+          summary: run.summary,
+          evidence: [],
+          contradictingEvidence: [],
+          assumptions: run.assumptions,
+          unknowns: run.unknowns,
+          specialistsUsed: [run.role],
+          agentRuns: [run],
+          modelCalls: run.modelCalls,
+          toolCalls: run.toolCalls,
+          actualCostUsd: null,
+          elapsedMs: Date.now() - startTime,
+          providerFailures:
+            run.status === "FAILED" ? ["LYRICS_EXPERT_FAILED"] : [],
+          humanGates: [],
+          recommendedNextAction: run.recommendedNextAction,
+          routes: [run.route]
+        })
+      );
+      started = false;
+    } catch {
+      if (started) store.failMission(payload.directiveId);
+      store.recordEvent("MUSIC_LYRICS_REVIEW_FAILED", {
+        directiveId: payload.directiveId
+      });
+    } finally {
+      store.releaseReview();
+    }
   }
 
   async queueExternalDirective(input: unknown) {
@@ -688,7 +832,10 @@ export default {
               "/admin/bridge-health",
               "/admin/search-diagnostics"
             ].includes(pathname)) ||
-          (request.method === "POST" && pathname === "/admin/retry-research") ||
+          (request.method === "POST" &&
+            ["/admin/retry-research", "/admin/review-lyrics"].includes(
+              pathname
+            )) ||
           (request.method === "POST" &&
             [
               "/admin/external-directive",
@@ -743,6 +890,12 @@ export default {
         const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
         const result = await stub.retryFailedResearchMission();
         return Response.json(result, {
+          headers: { "cache-control": "no-store" }
+        });
+      }
+      if (pathname === "/admin/review-lyrics") {
+        const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
+        return Response.json(await stub.queueLyricsReview(), {
           headers: { "cache-control": "no-store" }
         });
       }

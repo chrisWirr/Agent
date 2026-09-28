@@ -27,13 +27,15 @@ export type AutonomyLimits = {
 };
 
 export const DEFAULT_LIMITS: AutonomyLimits = {
-  maxSpecialistsPerMission: 2,
+  maxSpecialistsPerMission: 3,
   maxModelCallsPerSpecialist: 1,
   maxToolCallsPerSpecialist: 4,
   maxStrategistCallsPerDay: 2,
   maxMissionsPerDay: 1,
   reviewCooldownMinutes: 60
 };
+
+const MAX_PLANNED_SPECIALISTS = 2;
 
 function boundedText(value: unknown, maxLength: number): string {
   const text =
@@ -54,7 +56,7 @@ function boundedItems(value: unknown, maxItems: number, maxLength: number) {
 export function parseRootPlan(text: string): RootPlan {
   const raw = parseModelJson(text, z.record(z.string(), z.unknown()));
   const specialistItems = Array.isArray(raw.specialists) ? raw.specialists : [];
-  if (specialistItems.length > DEFAULT_LIMITS.maxSpecialistsPerMission) {
+  if (specialistItems.length > MAX_PLANNED_SPECIALISTS) {
     throw new Error("SPECIALIST_LIMIT_REACHED");
   }
   return rootPlanSchema.parse({
@@ -193,7 +195,7 @@ export async function runRootMission(
     modelCalls++;
     const planReply = await deps.runModel(
       "ROOT",
-      `You are ROOT, the production coordinator for an original English-language singer. Turn the STRATEGIST directive into a small, reviewable creative mission. You have no direct audio-generation, listening, image-generation or web tools. At most ${limits.maxSpecialistsPerMission} temporary specialists from SONGWRITER, PRODUCER, VOCAL_DIRECTOR, A_AND_R, ART_DIRECTOR, RELEASE_PLANNER, RESEARCHER and AUDITOR. Assign at least one creative specialist when a draft is needed. Creative specialists make text drafts with no external tools; only RESEARCHER may use webSearch and readPage when public evidence is genuinely needed. A song draft needs an emotional statement, a distinctive original line, and a chorus that works with only piano or guitar. Do not claim a text draft is a finished recording. Do not imitate or clone a real artist. Never spend, contact, publish, upload, distribute, create accounts, destroy or change secrets; put an external action in a humanGate only when it is required for this current mission. Future registration, recording and publication are later stages, not gates for a text draft. A provisional artist name does not block drafting. Return ONLY one compact JSON object, under 500 words, with: approach (string), specialists (array; each has role, task, optional searchQuery as one string, reasonForDelegation, expectedValueOfDelegation, allowedTools), directFindings (empty unless verified), humanGates (array with proposedAction, reason, expectedBenefit, risk, exactApprovalNeeded). No prose before or after JSON.\nARTIST BRIEF: ${JSON.stringify(ARTIST_BRIEF)}\nDIRECTIVE: ${JSON.stringify(validDirective)}`
+      `You are ROOT, the production coordinator for an original English-language singer. Turn the STRATEGIST directive into a small, reviewable creative mission. You have no direct audio-generation, listening, image-generation or web tools. Plan at most ${MAX_PLANNED_SPECIALISTS} temporary specialists from SONGWRITER, PRODUCER, VOCAL_DIRECTOR, A_AND_R, ART_DIRECTOR, RELEASE_PLANNER, RESEARCHER and AUDITOR. A LYRICS_EXPERT is automatically added after every SONGWRITER draft, so do not plan that role yourself. Assign at least one creative specialist when a draft is needed. Creative specialists make text drafts with no external tools; only RESEARCHER may use webSearch and readPage when public evidence is genuinely needed. A song draft needs an emotional statement, a distinctive original line, and a chorus that works with only piano or guitar. Do not claim a text draft is a finished recording. Do not imitate or clone a real artist. Never spend, contact, publish, upload, distribute, create accounts, destroy or change secrets; put an external action in a humanGate only when it is required for this current mission. Future registration, recording and publication are later stages, not gates for a text draft. A provisional artist name does not block drafting. Return ONLY one compact JSON object, under 500 words, with: approach (string), specialists (array; each has role, task, optional searchQuery as one string, reasonForDelegation, expectedValueOfDelegation, allowedTools), directFindings (empty unless verified), humanGates (array with proposedAction, reason, expectedBenefit, risk, exactApprovalNeeded). No prose before or after JSON.\nARTIST BRIEF: ${JSON.stringify(ARTIST_BRIEF)}\nDIRECTIVE: ${JSON.stringify(validDirective)}`
     );
     rootRoute = planReply.route;
     rootRoutes.push(planReply.route);
@@ -209,16 +211,39 @@ export async function runRootMission(
       modelCalls++;
       const repair = await deps.runModel(
         "ROOT",
-        `Return ONLY valid compact JSON under 400 words for this original singer project. ROOT has no direct audio, image or web tools. Delegate drafts to SONGWRITER, PRODUCER, VOCAL_DIRECTOR, A_AND_R, ART_DIRECTOR or RELEASE_PLANNER with allowedTools []; RESEARCHER alone may use ["webSearch","readPage"] if public evidence is needed. Keys: approach:string, specialists:array of at most ${limits.maxSpecialistsPerMission} objects with role,task,optional searchQuery (one string),reasonForDelegation,expectedValueOfDelegation,allowedTools; directFindings:array of strings; humanGates:array of objects with proposedAction,reason,expectedBenefit,risk,exactApprovalNeeded. No markdown or explanation. Directive: ${JSON.stringify(validDirective)}`
+        `Return ONLY valid compact JSON under 400 words for this original singer project. ROOT has no direct audio, image or web tools. Delegate drafts to SONGWRITER, PRODUCER, VOCAL_DIRECTOR, A_AND_R, ART_DIRECTOR or RELEASE_PLANNER with allowedTools []; RESEARCHER alone may use ["webSearch","readPage"] if public evidence is needed. LYRICS_EXPERT is added automatically after SONGWRITER; do not include it. Keys: approach:string, specialists:array of at most ${MAX_PLANNED_SPECIALISTS} objects with role,task,optional searchQuery (one string),reasonForDelegation,expectedValueOfDelegation,allowedTools; directFindings:array of strings; humanGates:array of objects with proposedAction,reason,expectedBenefit,risk,exactApprovalNeeded. No markdown or explanation. Directive: ${JSON.stringify(validDirective)}`
       );
       rootRoute = repair.route;
       rootRoutes.push(repair.route);
       plan = parseRootPlan(repair.text);
     }
-    if (plan.specialists.length > limits.maxSpecialistsPerMission) {
+    if (plan.specialists.length > MAX_PLANNED_SPECIALISTS) {
       throw new Error("SPECIALIST_LIMIT_REACHED");
     }
-    const specs = plan.specialists.map((item) => ({
+    const planned = plan.specialists.filter(
+      (item) => item.role !== "LYRICS_EXPERT"
+    );
+    if (planned.length !== plan.specialists.length)
+      throw new Error("LYRICS_EXPERT_IS_AUTOMATIC");
+    const assignments: RootPlan["specialists"] = planned.some(
+      (item) => item.role === "SONGWRITER"
+    )
+      ? [
+          ...planned,
+          {
+            role: "LYRICS_EXPERT",
+            task: "Review the songwriter's complete English lyrics line by line and deliver a candid lyric review plus a complete revised song draft.",
+            reasonForDelegation:
+              "Every new song needs an independent lyric craft review.",
+            expectedValueOfDelegation:
+              "Specific edits and a stronger, singable second draft.",
+            allowedTools: []
+          }
+        ]
+      : planned;
+    if (assignments.length > limits.maxSpecialistsPerMission)
+      throw new Error("SPECIALIST_LIMIT_REACHED");
+    const specs = assignments.map((item) => ({
       agentId: crypto.randomUUID(),
       role: item.role,
       objective: validDirective.objective.slice(0, 800),
@@ -247,12 +272,18 @@ export async function runRootMission(
       });
     const settled: PromiseSettledResult<SpecialistResult>[] = [];
     for (const spec of specs) {
-      const priorArtifacts = settled
+      const priorResults = settled
         .filter(
           (item): item is PromiseFulfilledResult<SpecialistResult> =>
             item.status === "fulfilled"
         )
-        .flatMap((item) => item.value.artifacts)
+        .map((item) => item.value);
+      const priorArtifacts = (
+        spec.role === "LYRICS_EXPERT"
+          ? priorResults.filter((item) => item.role === "SONGWRITER")
+          : priorResults
+      )
+        .flatMap((item) => item.artifacts)
         .slice(0, 2)
         .map((artifact) => artifact.slice(0, 8000));
       const context = priorArtifacts.length
@@ -263,7 +294,9 @@ export async function runRootMission(
           }).slice(0, 11000)
         : spec.context;
       const [outcome] = await Promise.allSettled([
-        spawnSpecialist({ ...spec, context }, deps)
+        spec.role === "LYRICS_EXPERT" && priorArtifacts.length === 0
+          ? Promise.reject(new Error("SONG_DRAFT_MISSING"))
+          : spawnSpecialist({ ...spec, context }, deps)
       ]);
       settled.push(outcome);
     }

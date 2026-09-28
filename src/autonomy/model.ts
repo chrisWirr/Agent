@@ -5,10 +5,13 @@ import type { ModelRunner } from "./runtime";
 import type { Route } from "./schemas";
 
 const DEFAULT_CF_MODEL = "@cf/zai-org/glm-4.7-flash";
+const LYRICS_CF_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 function requestedModel(env: Env, role: Parameters<ModelRunner>[0]): string {
   if (role === "STRATEGIST") return env.STRATEGIST_MODEL || DEFAULT_CF_MODEL;
   if (role === "ROOT") return env.ROOT_MODEL || "openclaw/main";
+  if (role === "LYRICS_EXPERT")
+    return env.LYRICS_EXPERT_MODEL || LYRICS_CF_MODEL;
   if (role === "AUDITOR")
     return env.AUDITOR_MODEL || env.DEFAULT_WORKER_MODEL || DEFAULT_CF_MODEL;
   return env.DEFAULT_WORKER_MODEL || DEFAULT_CF_MODEL;
@@ -75,7 +78,7 @@ export function createModelRunner(env: Env): ModelRunner {
       const result = await generateText({
         model: choice.model,
         prompt,
-        maxOutputTokens: 1500,
+        maxOutputTokens: role === "LYRICS_EXPERT" ? 3000 : 1500,
         maxRetries: 0,
         abortSignal: signal
       });
@@ -87,7 +90,7 @@ export function createModelRunner(env: Env): ModelRunner {
       const result = await generateText({
         model: cf.model,
         prompt,
-        maxOutputTokens: 1500,
+        maxOutputTokens: role === "LYRICS_EXPERT" ? 3000 : 1500,
         maxRetries: 0,
         abortSignal: signal
       });

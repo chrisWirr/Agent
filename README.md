@@ -4,10 +4,12 @@ Dieses Repository steuert ein originelles englischsprachiges Sängerinnenprojekt
 
 ## Stand des Systems
 
-- Der Cloudflare Worker bleibt Chat-Oberfläche und Laufzeit für ROOT. Ein geplanter STRATEGIST wählt kleine künstlerische Schritte; ROOT delegiert höchstens zwei Spezialisten pro Mission.
-- Unterstützte Textrollen: `SONGWRITER`, `PRODUCER`, `VOCAL_DIRECTOR`, `A_AND_R`, `ART_DIRECTOR`, `RELEASE_PLANNER`, `AUDITOR` und `RESEARCHER`. Nur `RESEARCHER` hat öffentliche Web-Recherchewerkzeuge. Andere Rollen erzeugen Textentwürfe und Arbeitsanweisungen.
+- Der Cloudflare Worker bleibt Chat-Oberfläche und Laufzeit für ROOT. Ein geplanter STRATEGIST wählt kleine künstlerische Schritte; ROOT plant höchstens zwei Spezialisten pro Mission. Nach jedem neuen Songtext führt ein zusätzlicher Lyrics-Experte eine unabhängige Textprüfung durch.
+- Unterstützte Textrollen: `SONGWRITER`, `LYRICS_EXPERT`, `PRODUCER`, `VOCAL_DIRECTOR`, `A_AND_R`, `ART_DIRECTOR`, `RELEASE_PLANNER`, `AUDITOR` und `RESEARCHER`. Der Lyrics-Experte prüft Aussage, Bildsprache, Sprachrhythmus, Singbarkeit, Refrain und Klischees und legt eine vollständige Überarbeitung ab. Nur `RESEARCHER` hat öffentliche Web-Recherchewerkzeuge. Andere Rollen erzeugen Textentwürfe und Arbeitsanweisungen.
 - Künstlerprofil und Produktionsprinzipien stehen in `src/music/project.ts`. Entwürfe werden als `DRAFT` in der SQLite-Datenbank des Durable Object gespeichert. Der geschützte Endpunkt `/admin/music` zeigt Profil, Entwürfe und aktuelle Entscheidungen.
 - Auf der Live-Seite führt „Workspace“ zur privaten Studio-Ansicht (`/studio`). Sie lädt die Entwürfe nach Eingabe des Admin-Tokens. Der Token bleibt nur im Browser-Speicher der offenen Sitzung und gehört nicht in URLs oder Git.
+- Ein vorhandener Songentwurf kann über den geschützten `POST /admin/review-lyrics` einmalig dem Lyrics-Experten vorgelegt werden; Kritik und Überarbeitung erscheinen danach als eigene Entwürfe im Workspace.
+- Der Lyrics-Experte nutzt die Cloudflare-AI-Bindung (`LYRICS_EXPERT_MODEL`); ein fehlgeschlagener oder unvollständiger manueller Lauf kann bis zu zweimal wiederholt werden.
 - Alte Wirtschafts-Missionen bleiben als Historie gespeichert, werden aber für die neue Musikinitiative nicht als aktuelle Strategiedaten verwendet.
 - Audioerzeugung, echtes Hören/Abnehmen, Bilddateien, Vertrieb, Promotion und Kostenbuchung sind noch nicht angeschlossen. Ein Textentwurf wird nicht als fertiger Song ausgegeben. Veröffentlichung, Uploads, Zahlungen und externe Kontakte brauchen eine konkrete menschliche Freigabe.
 

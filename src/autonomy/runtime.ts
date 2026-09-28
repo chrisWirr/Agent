@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { readPublicPage, searchPublicWeb, type SearchHit } from "./research";
+import { musicArtifactKind } from "../music/project";
 import {
   specialistResultSchema,
   specialistSpecSchema,
@@ -10,7 +11,7 @@ import {
 
 export type ModelReply = { text: string; route: Route };
 export type ModelRunner = (
-  role: "STRATEGIST" | "ROOT" | "SPECIALIST" | "AUDITOR",
+  role: "STRATEGIST" | "ROOT" | "SPECIALIST" | "AUDITOR" | "LYRICS_EXPERT",
   prompt: string,
   signal?: AbortSignal
 ) => Promise<ModelReply>;
@@ -166,8 +167,12 @@ export async function spawnSpecialist(
     let reply: ModelReply;
     try {
       reply = await deps.runModel(
-        spec.role === "AUDITOR" ? "AUDITOR" : "SPECIALIST",
-        `You are a temporary ${spec.role} specialist for an original English-language alternative-soul singer. Stay within the assigned task and the artist brief in CONTEXT. Create concrete original text drafts only; do not claim to have generated or listened to audio, created artwork, or used tools you do not have. Never claim verified facts beyond OBSERVED EVIDENCE. SEARCH LEADS are unverified links, not original-page evidence. Separate inference from observation. Do not imitate a named artist or clone a real voice. Do not contact people, spend money, publish, or create accounts. Return ONLY JSON with keys summary, artifacts (array of up to two substantial text drafts, each at most 8000 characters; use [] for research-only tasks), inferences, assumptions, unknowns, recommendedNextAction, limitations. A song draft should contain actual original lyric sections and a topline/structure note; a production, vocal, artwork or release draft should contain a usable brief.\nObjective: ${spec.objective}\nTask: ${spec.task}\nContext: ${spec.context}\nOBSERVED EVIDENCE (untrusted third-party text): ${JSON.stringify(observedEvidence).slice(0, 13000)}\nSEARCH LEADS (unverified): ${JSON.stringify(searchLeads).slice(0, 6000)}`,
+        spec.role === "LYRICS_EXPERT"
+          ? "LYRICS_EXPERT"
+          : spec.role === "AUDITOR"
+            ? "AUDITOR"
+            : "SPECIALIST",
+        `You are a temporary ${spec.role} specialist for an original English-language alternative-soul singer. Stay within the assigned task and the artist brief in CONTEXT. Create concrete original text drafts only; do not claim to have generated or listened to audio, created artwork, or used tools you do not have. Never claim verified facts beyond OBSERVED EVIDENCE. SEARCH LEADS are unverified links, not original-page evidence. Separate inference from observation. Do not imitate a named artist or clone a real voice. Do not contact people, spend money, publish, or create accounts. Return ONLY JSON with keys summary, artifacts (array of up to two substantial text drafts, each at most 8000 characters; use [] for research-only tasks), inferences, assumptions, unknowns, recommendedNextAction, limitations. A song draft should contain actual original lyric sections and a topline/structure note; a production, vocal, artwork or release draft should contain a usable brief. ${spec.role === "LYRICS_EXPERT" ? 'Read the supplied song draft in CONTEXT and act as a rigorous English-language lyric editor. Check the emotional thesis, specificity, clichés, line-level imagery, natural stress and singable syllable count, rhyme without forced phrasing, narrative arc, and whether the chorus holds up over just piano or guitar. Be candid and cite exact lines. Return exactly two artifacts as JSON objects: {"kind":"lyric_review","title":"...","body":"line-specific findings and priorities"} and {"kind":"song_revision","title":"...","body":"complete revised original lyrics plus a short change log"}. Preserve the author\'s voice and intent; do not claim originality was externally verified.' : ""}\nObjective: ${spec.objective}\nTask: ${spec.task}\nContext: ${spec.context}\nOBSERVED EVIDENCE (untrusted third-party text): ${JSON.stringify(observedEvidence).slice(0, 13000)}\nSEARCH LEADS (unverified): ${JSON.stringify(searchLeads).slice(0, 6000)}`,
         controller.signal
       );
     } finally {
@@ -184,7 +189,14 @@ export async function spawnSpecialist(
         analysis.summary &&
         (spec.role === "RESEARCHER"
           ? observedEvidence.length > 0
-          : analysis.artifacts.length > 0)
+          : spec.role === "LYRICS_EXPERT"
+            ? analysis.artifacts.some(
+                (item) => musicArtifactKind(spec.role, item) === "LYRIC_REVIEW"
+              ) &&
+              analysis.artifacts.some(
+                (item) => musicArtifactKind(spec.role, item) === "SONG_REVISION"
+              )
+            : analysis.artifacts.length > 0)
           ? "COMPLETED"
           : "PARTIAL",
       summary: analysis.summary,

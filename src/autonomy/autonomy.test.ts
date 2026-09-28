@@ -352,7 +352,7 @@ test("music mission produces a draft and keeps legacy missions out of the new wo
   });
   const lyric =
     "Verse: I left the porch light on for who I used to be.\nChorus: I can be broken and still be free.\nTopline: sparse verse, rising minor-key chorus.";
-  const runModel: ModelRunner = async (role) => ({
+  const runModel: ModelRunner = async (role, prompt) => ({
     text:
       role === "ROOT"
         ? JSON.stringify({
@@ -377,21 +377,45 @@ test("music mission produces a draft and keeps legacy missions out of the new wo
               }
             ]
           })
-        : JSON.stringify({
-            summary: "A first song draft is ready for artistic review",
-            artifacts: [lyric],
-            inferences: [],
-            assumptions: [],
-            unknowns: ["No recording or listening test exists"],
-            recommendedNextAction: "Review the chorus with piano",
-            limitations: ["Text draft only"]
-          }),
+        : role === "LYRICS_EXPERT"
+          ? JSON.stringify({
+              summary: prompt.includes(lyric)
+                ? "The supplied chorus has been sharpened and revised"
+                : "Song draft was missing",
+              artifacts: [
+                {
+                  kind: "lyric_review",
+                  title: "Review",
+                  body: "Tighten the chorus stress."
+                },
+                {
+                  kind: "song_revision",
+                  title: "Revised song",
+                  body: "Verse: The porch light is out. Chorus: I still choose me."
+                }
+              ],
+              inferences: [],
+              assumptions: [],
+              unknowns: [],
+              recommendedNextAction: "Try the revised chorus with piano",
+              limitations: []
+            })
+          : JSON.stringify({
+              summary: "A first song draft is ready for artistic review",
+              artifacts: [lyric],
+              inferences: [],
+              assumptions: [],
+              unknowns: ["No recording or listening test exists"],
+              recommendedNextAction: "Review the chorus with piano",
+              limitations: ["Text draft only"]
+            }),
     route: unknownRoute
   });
   const result = await runRootMission(musicDirective, { runModel });
   assert.equal(result.status, "COMPLETED");
   assert.deepEqual(result.humanGates, []);
   assert.equal(result.agentRuns[0].artifacts[0], lyric);
+  assert.deepEqual(result.specialistsUsed, ["SONGWRITER", "LYRICS_EXPERT"]);
   assert.equal(result.evidence.length, 0);
 
   const db = new DatabaseSync(":memory:");
@@ -434,10 +458,20 @@ test("music mission produces a draft and keeps legacy missions out of the new wo
   store.saveMission(result);
   store.saveMission(result);
   const artifacts = store.recentMusicArtifacts();
-  assert.equal(artifacts.length, 1);
-  assert.equal(artifacts[0].kind, "SONG_DRAFT");
-  assert.equal(artifacts[0].status, "DRAFT");
-  assert.equal(artifacts[0].content, lyric);
+  assert.equal(artifacts.length, 3);
+  assert.deepEqual(artifacts.map((artifact) => artifact.kind).sort(), [
+    "LYRIC_REVIEW",
+    "SONG_DRAFT",
+    "SONG_REVISION"
+  ]);
+  assert.equal(
+    artifacts.every((artifact) => artifact.status === "DRAFT"),
+    true
+  );
+  assert.equal(
+    artifacts.find((artifact) => artifact.kind === "SONG_DRAFT")?.content,
+    lyric
+  );
   assert.equal(store.recentMissions().length, 1);
   const summary = compactStateSummary({
     recentDirectives: store.recentDirectives(),
@@ -494,9 +528,24 @@ test("artistic reviewer receives the songwriter draft in the same mission", asyn
         text: JSON.stringify({
           summary: "Draft reviewed",
           artifacts: [
-            role === "AUDITOR"
-              ? "Review: chorus is specific"
-              : "Original chorus"
+            ...(role === "LYRICS_EXPERT"
+              ? [
+                  {
+                    kind: "lyric_review",
+                    title: "Review",
+                    body: "Sharper imagery needed"
+                  },
+                  {
+                    kind: "song_revision",
+                    title: "Revision",
+                    body: "Revised original chorus"
+                  }
+                ]
+              : [
+                  role === "AUDITOR"
+                    ? "Review: chorus is specific"
+                    : "Original chorus"
+                ])
           ],
           inferences: [],
           assumptions: [],
@@ -510,7 +559,8 @@ test("artistic reviewer receives the songwriter draft in the same mission", asyn
   });
   assert.equal(reviewerSawDraft, true);
   assert.equal(result.status, "COMPLETED");
-  assert.equal(result.agentRuns.length, 2);
+  assert.equal(result.agentRuns.length, 3);
+  assert.equal(result.agentRuns[2].role, "LYRICS_EXPERT");
 });
 
 test("music creation cannot complete from research evidence alone", async () => {

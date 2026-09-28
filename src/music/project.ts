@@ -26,6 +26,7 @@ export const ARTIST_BRIEF = {
 
 export const MUSIC_SPECIALIST_ROLES = [
   "SONGWRITER",
+  "LYRICS_EXPERT",
   "PRODUCER",
   "VOCAL_DIRECTOR",
   "A_AND_R",
@@ -49,6 +50,10 @@ export function musicArtifactKind(
         parsed.kind === "artist_identity_card"
       )
         return "ARTIST_PROFILE";
+      if (parsed && typeof parsed === "object" && "kind" in parsed) {
+        if (parsed.kind === "lyric_review") return "LYRIC_REVIEW";
+        if (parsed.kind === "song_revision") return "SONG_REVISION";
+      }
     } catch {
       // Plain-text drafts continue to use the specialist's artifact type.
     }
@@ -56,6 +61,8 @@ export function musicArtifactKind(
   switch (role) {
     case "SONGWRITER":
       return "SONG_DRAFT";
+    case "LYRICS_EXPERT":
+      return "LYRIC_REVIEW";
     case "PRODUCER":
       return "PRODUCTION_BRIEF";
     case "VOCAL_DIRECTOR":

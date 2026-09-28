@@ -5,6 +5,7 @@ interface Env {
   ROOT_MODEL?: string;
   DEFAULT_WORKER_MODEL?: string;
   AUDITOR_MODEL?: string;
+  LYRICS_EXPERT_MODEL?: string;
   STRATEGIST_REVIEW_MINUTES?: string;
   AUTONOMY_ADMIN_TOKEN?: string;
 }

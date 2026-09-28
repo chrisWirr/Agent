@@ -42,6 +42,8 @@ function draftDisplay(draft: Draft): { title: string; body: string } {
 const kindLabels: Record<string, string> = {
   ARTIST_PROFILE: "Künstlerprofil",
   SONG_DRAFT: "Songentwurf",
+  LYRIC_REVIEW: "Lyrics-Prüfung",
+  SONG_REVISION: "Überarbeiteter Song",
   PRODUCTION_BRIEF: "Produktion",
   VOCAL_BRIEF: "Gesang",
   ARTISTIC_REVIEW: "Künstlerische Prüfung",
@@ -213,7 +215,7 @@ export default function StudioPage() {
                   return (
                     <details
                       key={draft.id}
-                      defaultOpen={index < 2}
+                      open={index < 2}
                       className="rounded-xl border border-kumo-line bg-kumo-base p-5"
                     >
                       <summary className="cursor-pointer list-none">
