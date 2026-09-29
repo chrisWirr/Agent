@@ -3,6 +3,11 @@ import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import { timingSafeEqual } from "node:crypto";
 import { readPublicPage, searchPublicWeb } from "../src/autonomy/research.ts";
+import {
+  musicCapabilities,
+  submitMusicJob,
+  musicMetrics
+} from "./music-publisher.mjs";
 
 const tokenFile = process.env.OPENCLAW_GATEWAY_TOKEN_FILE;
 if (!tokenFile) throw new Error("OPENCLAW_GATEWAY_TOKEN_FILE is required");
@@ -25,6 +30,43 @@ createServer(async (request, response) => {
   }
 
   const url = new URL(request.url || "/", "http://localhost");
+  if (url.pathname.startsWith("/music/")) {
+    try {
+      let result;
+      if (url.pathname === "/music/capabilities" && request.method === "GET")
+        result = await musicCapabilities();
+      else if (
+        request.method === "POST" &&
+        ["/music/jobs", "/music/metrics"].includes(url.pathname)
+      ) {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of request) {
+          size += chunk.length;
+          if (size > 9_000_000) throw new Error("PAYLOAD_TOO_LARGE");
+          chunks.push(chunk);
+        }
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        result =
+          url.pathname === "/music/jobs"
+            ? await submitMusicJob(body)
+            : await musicMetrics(body.videoIds);
+      } else {
+        response.writeHead(404).end("Not found");
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "cache-control": "no-store"
+      });
+      response.end(JSON.stringify(result));
+    } catch {
+      response
+        .writeHead(400, { "content-type": "application/json" })
+        .end(JSON.stringify({ error: "MUSIC_REQUEST_FAILED" }));
+    }
+    return;
+  }
   if (url.pathname === "/research/search" && request.method === "GET") {
     const query = url.searchParams.get("q")?.slice(0, 160) || "";
     if (!query) {

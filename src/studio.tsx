@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Badge, Button, Surface, Text } from "@cloudflare/kumo";
+import ReleasePanel, { type ReleaseView } from "./release-panel";
+import type { RELEASE_STRATEGY } from "./music/release";
 
 type Draft = {
   id: string;
@@ -11,6 +13,8 @@ type Draft = {
 };
 
 type Workspace = {
+  releases: ReleaseView[];
+  releaseStrategy: typeof RELEASE_STRATEGY;
   programId: string;
   artistBrief: Record<string, unknown>;
   drafts: Draft[];
@@ -157,9 +161,9 @@ function SunoReturnForm({
         />
       </label>
       <Text size="sm" variant="secondary">
-        Die MP3 wird nur zur automatischen Transkription verarbeitet. Die Datei
-        wird nicht gespeichert; der Suno-Link bleibt die Hörquelle. Ohne
-        Audiodatei erstellt das System noch keinen vollständigen Audit.
+        Die MP3 wird zur automatischen Transkription verarbeitet und privat für
+        die spätere Veröffentlichung gespeichert. Ohne Audiodatei erstellt das
+        System noch keinen vollständigen Audit.
       </Text>
       <Button type="submit" variant="primary" disabled={busy}>
         {busy ? "Verarbeite …" : "Ergebnis übergeben"}
@@ -199,7 +203,10 @@ const kindLabels: Record<string, string> = {
   VOCAL_BRIEF: "Gesang",
   ARTISTIC_REVIEW: "Künstlerische Prüfung",
   ARTWORK_BRIEF: "Artwork",
-  RELEASE_PLAN: "Release-Plan"
+  RELEASE_PLAN: "Release-Plan",
+  MARKETING_PLAN: "Vermarktung",
+  DISTRIBUTION_PLAN: "Vertrieb",
+  MONETIZATION_REVIEW: "Monetarisierung"
 };
 
 export default function StudioPage() {
@@ -336,6 +343,14 @@ export default function StudioPage() {
               </Surface>
             </section>
 
+            {workspace.releaseStrategy && (
+              <ReleasePanel
+                releases={workspace.releases ?? []}
+                strategy={workspace.releaseStrategy}
+                token={token.trim()}
+                refresh={loadWorkspace}
+              />
+            )}
             <section>
               <h2 className="mb-3 text-lg font-semibold">Übergabe an Suno</h2>
               {(workspace.sunoHandoffs ?? []).length === 0 ? (

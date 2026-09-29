@@ -1,6 +1,7 @@
 import type { Directive, MissionResult } from "./schemas";
 import { MUSIC_PROGRAM_ID, musicArtifactKind } from "../music/project";
 import type { SunoHandoff } from "../music/suno";
+import type { Release } from "../music/release";
 
 type Sql = <T = Record<string, string | number | boolean | null>>(
   strings: TemplateStringsArray,
@@ -59,6 +60,12 @@ export class AutonomyStore {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )`;
+    this
+      .sql`CREATE TABLE IF NOT EXISTS music_releases (id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at INTEGER NOT NULL)`;
+    this
+      .sql`CREATE TABLE IF NOT EXISTS music_audio_chunks (hash TEXT NOT NULL, part INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(hash, part))`;
+    this
+      .sql`CREATE TABLE IF NOT EXISTS music_audio (hash TEXT PRIMARY KEY, parts INTEGER NOT NULL)`;
     this
       .sql`CREATE INDEX IF NOT EXISTS autonomy_entries_kind_time ON autonomy_entries(kind, created_at DESC)`;
     this
@@ -245,6 +252,78 @@ export class AutonomyStore {
       VALUES (${handoff.id}, ${handoff.sourceArtifactId}, ${handoff.status}, ${JSON.stringify(handoff)}, ${now}, ${now})
       ON CONFLICT(id) DO UPDATE SET
       status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`;
+  }
+
+  saveRelease(release: Release) {
+    this
+      .sql`INSERT INTO music_releases (id, payload, updated_at) VALUES (${release.id}, ${JSON.stringify(release)}, ${Date.now()})
+      ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`;
+  }
+
+  getRelease(id: string): Release | null {
+    const row = this.sql<{
+      payload: string;
+    }>`SELECT payload FROM music_releases WHERE id = ${id}`[0];
+    return row ? (JSON.parse(row.payload) as Release) : null;
+  }
+
+  recentReleases(): Release[] {
+    return this.sql<{
+      payload: string;
+    }>`SELECT payload FROM music_releases ORDER BY updated_at DESC LIMIT 20`.map(
+      (row) => JSON.parse(row.payload) as Release
+    );
+  }
+
+  saveAudio(hash: string, base64: string) {
+    if (!/^[a-f0-9]{64}$/.test(hash) || base64.length > 8_000_000)
+      throw new Error("INVALID_AUDIO");
+    let parts = 0;
+    for (let offset = 0; offset < base64.length; offset += 128000) {
+      this
+        .sql`INSERT OR IGNORE INTO music_audio_chunks (hash, part, data) VALUES (${hash}, ${parts}, ${base64.slice(offset, offset + 128000)})`;
+      parts++;
+    }
+    this
+      .sql`INSERT OR REPLACE INTO music_audio (hash, parts) VALUES (${hash}, ${parts})`;
+  }
+
+  hasAudio(hash: string | null): boolean {
+    if (!hash) return false;
+    return Boolean(
+      this.sql`SELECT hash FROM music_audio WHERE hash = ${hash}`[0]
+    );
+  }
+
+  getAudio(hash: string): string | null {
+    const entry = this.sql<{
+      parts: number;
+    }>`SELECT parts FROM music_audio WHERE hash = ${hash}`[0];
+    if (!entry) return null;
+    const chunks = this.sql<{
+      data: string;
+    }>`SELECT data FROM music_audio_chunks WHERE hash = ${hash} ORDER BY part`;
+    return chunks.length === entry.parts
+      ? chunks.map((chunk) => chunk.data).join("")
+      : null;
+  }
+
+  tryAcquireReleaseTick(): boolean {
+    const now = Date.now();
+    const stale = now - 10 * 60 * 1000;
+    this
+      .sql`DELETE FROM autonomy_entries WHERE id = 'release-lock' AND updated_at < ${stale}`;
+    this
+      .sql`INSERT OR IGNORE INTO autonomy_entries (id, kind, status, payload, created_at, updated_at)
+      VALUES ('release-lock', 'lock', 'RUNNING', '{}', ${now}, ${now})`;
+    return (
+      (this.sql<{ count: number }>`SELECT changes() AS count`[0]?.count ??
+        0) === 1
+    );
+  }
+
+  releaseReleaseTick() {
+    this.sql`DELETE FROM autonomy_entries WHERE id = 'release-lock'`;
   }
 
   getSunoHandoff(id: string): SunoHandoff | null {

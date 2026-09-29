@@ -17,7 +17,7 @@
     "types": "wrangler types env.d.ts",
     "format": "oxfmt --write .",
     "lint": "oxlint src/",
-    "test:autonomy": "tsx --test src/autonomy/autonomy.test.ts src/music/suno.test.ts",
+    "test:autonomy": "tsx --test src/chat-model.test.ts src/autonomy/autonomy.test.ts src/music/suno.test.ts src/music/release.test.ts scripts/music-publisher.test.mjs",
     "check": "oxfmt --check . && oxlint src/ && tsc"
   },
   "dependencies": {

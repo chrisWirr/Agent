@@ -34,6 +34,9 @@ export const MUSIC_SPECIALIST_ROLES = [
   "A_AND_R",
   "ART_DIRECTOR",
   "RELEASE_PLANNER",
+  "MARKETING_STRATEGIST",
+  "DISTRIBUTION_MANAGER",
+  "MONETIZATION_ANALYST",
   "RESEARCHER",
   "AUDITOR"
 ] as const;
@@ -74,6 +77,12 @@ export function musicArtifactKind(
       return "ARTISTIC_REVIEW";
     case "ART_DIRECTOR":
       return "ARTWORK_BRIEF";
+    case "MARKETING_STRATEGIST":
+      return "MARKETING_PLAN";
+    case "DISTRIBUTION_MANAGER":
+      return "DISTRIBUTION_PLAN";
+    case "MONETIZATION_ANALYST":
+      return "MONETIZATION_REVIEW";
     case "RELEASE_PLANNER":
       return "RELEASE_PLAN";
     default:

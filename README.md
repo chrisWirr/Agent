@@ -11,10 +11,10 @@ Dieses Repository steuert ein originelles englischsprachiges Sängerinnenprojekt
 - Ein vorhandener Songentwurf kann über den geschützten `POST /admin/review-lyrics` einmalig dem Lyrics-Experten vorgelegt werden; Kritik und Überarbeitung erscheinen danach als eigene Entwürfe im Workspace.
 - Der Lyrics-Experte nutzt die Cloudflare-AI-Bindung (`LYRICS_EXPERT_MODEL`); ein fehlgeschlagener oder unvollständiger manueller Lauf kann bis zu zweimal wiederholt werden.
 - Nach einer vollständigen Lyrics-Revision entscheidet ein unabhängiges A&R-/Produktionstor, ob der Song eine Suno-Demo verdient. Nur bei `READY` speichert es im privaten Workspace einen eigenen `Style of Music`-Prompt, den endgültigen Lyrics-Text und Hörkriterien. Der Mensch nutzt [Suno Custom Mode](https://help.suno.com/en/categories/550017) selbst; die Agenten verwenden kein Suno-Konto und keine Suno-Credits.
-- Die beste Suno-Version wird im Workspace mit Suno-Link, Hörnotizen und dem Tarif zum Erzeugungszeitpunkt zurückgegeben. Optional kann eine MP3 bis 6 MB hochgeladen werden: Sie wird über die Workers-AI-Bindung transkribiert; gespeichert werden nur Transkript, Dateiname, Größe und SHA-256, nicht die Audiodatei. Ohne Transkript bleibt der Audit offen. Ein unabhängiger Audit vergleicht die übermittelten Lyrics und die Transkription, berücksichtigt deine Hörnotizen als menschliche Beobachtungen und erstellt gegebenenfalls einen Release-Vorschlag. Er behauptet nie, das Audio selbst gehört zu haben.
+- Die beste Suno-Version wird im Workspace mit Suno-Link, Hörnotizen und dem Tarif zum Erzeugungszeitpunkt zurückgegeben. Optional kann eine MP3 bis 6 MB hochgeladen werden: Sie wird über die Workers-AI-Bindung transkribiert; gespeichert werden Transkript, Dateiname, Größe und SHA-256 sowie die private MP3 in begrenzten SQLite-Blöcken für die spätere Veröffentlichung. Ohne Transkript bleibt der Audit offen. Ein unabhängiger Audit vergleicht die übermittelten Lyrics und die Transkription, berücksichtigt deine Hörnotizen als menschliche Beobachtungen und erstellt gegebenenfalls einen Release-Vorschlag. Er behauptet nie, das Audio selbst gehört zu haben.
 - Ein Release-Vorschlag ist keine Veröffentlichung. Die Rechtebasis bleibt sichtbar und ein Ergebnis aus einem kostenlosen oder ungeklärten Suno-Tarif wird für kommerzielle Verbreitung gesperrt. [Suno unterscheidet kostenlose und bei bezahltem Tarif erzeugte Songs](https://help.suno.com/en/articles/2410177); die Berechtigung wird vor einer konkreten Veröffentlichung geprüft.
 - Alte Wirtschafts-Missionen bleiben als Historie gespeichert, werden aber für die neue Musikinitiative nicht als aktuelle Strategiedaten verwendet.
-- Audioerzeugung und echtes Hören bleiben beim Menschen. Bilddateien, Vertrieb, Promotion und Kostenbuchung sind noch nicht angeschlossen. Ein Textentwurf wird nicht als fertiger Song ausgegeben. Veröffentlichung, Uploads, Zahlungen und externe Kontakte brauchen eine konkrete menschliche Freigabe.
+- Audioerzeugung und echtes Hören bleiben beim Menschen. Nach dem erfolgreichen Audit autorisiert eine einzige Songfreigabe den automatischen YouTube-Visualizer und zwei Shorts. Diese Freigabe bindet die Audiodatei, die Kampagnenversion und den Zielkanal. Zahlungen, Werbung und externe Kontakte sind in diesem Ablauf nicht enthalten. Spotify-Vertrieb, Instagram und TikTok benötigen weiterhin passende Konten und eigene API-Adapter.
 
 Der Ablauf ist: Künstleridentität und Songbrief → Originalsong/Topline → Lyrics-Review → Suno-Bereitschaftsprüfung → menschliche Suno-Demo und Auswahl → Rückgabe mit Hörnotizen und optionaler MP3 → unabhängiger Audit → Release-Vorschlag → menschliche Freigabe → Publikumsfeedback.
 
@@ -55,3 +55,40 @@ Die Cloudflare-Quick-Tunnel-Adresse ändert sich nach Neustarts und muss im Work
 Der geschützte Endpunkt `/admin/autonomy` zeigt die aktuelle Mission und deren technischen Status; `/admin/music` zeigt zusätzlich Entwürfe und Suno-Übergaben. Das separat angelegte Google-Apps-Script `scripts/google-status-mail.gs` kann Statusmails und fertige Suno-Aufträge verschicken, sobald der vorhandene Admin-Token als private Skripteigenschaft eingetragen und der Trigger autorisiert wurde. Die lokale Skriptdatei muss dafür im Google-Apps-Script-Projekt aktualisiert werden.
 
 Eine neue Cloudflare-Version entsteht mit `npm run deploy`. Ein lokaler Commit allein verändert den bereits veröffentlichten Worker nicht.
+
+## Automatische Veröffentlichung
+
+Cloudflare verwaltet pro Song eine dauerhafte Warteschlange. Im Studio erzeugt das Marketing-Modul automatisch Titel, Beschreibung und zwei unterschiedliche Short-Texte. Die Kampagnenerstellung hat höchstens zwei Versuche pro Song und zwei Versuche pro Tag. Eine Freigabe ist erst mit positivem Audit, kommerzieller Rechtebasis, unveränderter gespeicherter MP3 und verbundenem YouTube-Kanal möglich.
+
+Nach „Song freigeben & automatisch veröffentlichen“:
+
+1. Die lokale Brücke erzeugt einen vollständigen Visualizer und zwei Hochkant-Clips mit FFmpeg.
+2. Die YouTube-API lädt den vollständigen Song auf den bestätigten Kanal hoch. Erst ein verarbeitetes, öffentliches Video zählt als veröffentlicht.
+3. Zwei Shorts folgen zwei und fünf Tage nach der tatsächlichen Veröffentlichung. Ihre Beschreibungen verweisen auf den vollständigen Song.
+4. Echte Views, Likes und Kommentare werden täglich abgefragt und an den Strategen weitergegeben. Optional werden YouTube-Erlösschätzungen der letzten 28 Tage abgerufen, mit Zeitraum und Kennzeichnung als Schätzung.
+
+Die Brücke speichert Auftragskennungen, Upload-Sitzungen und Ergebnisse privat unter `~/.local/share/agent-music`. Nach einem verlorenen Upload-Ergebnis fragt sie dieselbe resumierbare Sitzung ab. Unklare oder abgelaufene Sitzungen werden nicht durch einen neuen Upload ersetzt. Unabhängige Publikationen bleiben durch die Freigabe gebunden. „Pausieren“ hält neue Schritte an; es bricht keinen bereits laufenden Upload ab. Der Rechner muss für Rendering und YouTube-Uploads eingeschaltet bleiben. Cloudflare bewahrt den Auftrag bei einer unterbrochenen Brücke auf.
+
+### YouTube einmalig verbinden
+
+Benötigt werden ein eigener YouTube-Kanal und ein Google-Cloud-Projekt mit aktivierter **YouTube Data API v3** sowie einem OAuth-Client vom Typ **Desktop-App**. Dessen heruntergeladene JSON-Datei bleibt außerhalb des Repositorys. Dann:
+
+```bash
+node scripts/connect-youtube.mjs /pfad/zum/oauth-desktop-client.json
+```
+
+Optional mit der aktivierten YouTube Analytics API und Lesezugriff auf Erlösberichte:
+
+```bash
+node scripts/connect-youtube.mjs /pfad/zum/oauth-desktop-client.json --revenue
+```
+
+Die Anmeldung fordert Upload- und Leserechte für den ausgewählten Kanal an, mit `--revenue` zusätzlich Erlösberichte. Refresh-Token und Client-Geheimnis werden nur in `~/.config/agent-autonomy/youtube.json` (Modus 0600) gespeichert. Google-Apps im Testmodus können eine erneute Anmeldung erfordern. Google kann Videos aus ungeprüften API-Projekten auf private Sichtbarkeit begrenzen; dann zeigt das Studio `YOUTUBE_PRIVATE_RESTRICTION`. Die Aufnahme in das Partnerprogramm bzw. die Freigabe des API-Projekts kann die Software nicht ersetzen.
+
+FFmpeg mit `drawtext`, `showwaves` und H.264/AAC wird über `AGENT_FFMPEG`, `/usr/bin/ffmpeg` oder die lokale Installation unter `~/.local/share/agent-media-runtime/system/usr/bin/ffmpeg` gefunden. Auf diesem Rechner ist die lokale Installation eingerichtet. Der bestehende Startdienst `agent-local-bridge.service` betreibt den Publisher mit; es wird kein zusätzlicher Dienst benötigt.
+
+### Spotify und weitere Kanäle
+
+Spotify nimmt Musik über einen Distributor entgegen. DistroKids aktuelle Annahme von KI-Musik ist keine öffentliche Upload-API. Solange kein geeigneter API-Vertrieb mit Zugang verbunden ist, zeigt das Studio den Spotify-Vertrieb als **nicht verbunden**; es gibt keine simulierten Auslieferungen. Gleiches gilt derzeit für Instagram und TikTok. Das Modul stellt Strategie, Quellen und Voraussetzungen bereit. Es schaltet keine Werbung, bucht keine Tarife und errechnet keine fiktiven Streaming-Einnahmen.
+
+Quellen und Recherchestand sind direkt im Studio hinterlegt. Die YouTube-/Shorts-Strategie ist eine erste testbare Hypothese, keine behauptete Garantie für den besten Vermarktungskanal. Der bisherige Suno-Audit wird nach Ablauf seines Wiederholungslimits automatisch erneut eingereiht. Für alte Songabgaben muss einmal die ursprüngliche MP3 ergänzt werden, weil vorher nur die Transkription gespeichert wurde.

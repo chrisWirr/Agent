@@ -10,7 +10,7 @@ import {
   tool
 } from "ai";
 import { z } from "zod";
-import { createWorkersAI } from "workers-ai-provider";
+import { createChatWorkersAI } from "./chat-model";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { Buffer } from "node:buffer";
 import { createModelRunner } from "./autonomy/model";
@@ -37,6 +37,19 @@ import {
   sunoSubmissionSchema,
   type SunoHandoff
 } from "./music/suno";
+import {
+  approvalBlockers,
+  approvalSchema,
+  distributionPacket,
+  approveRelease,
+  RELEASE_STRATEGY
+} from "./music/release";
+import {
+  ensureReleases,
+  releaseBridge,
+  releaseSummary,
+  runReleaseTick
+} from "./music/pipeline";
 
 function safeSunoError(error: unknown): string {
   if (error instanceof z.ZodError) return "MODEL_RESPONSE_SCHEMA_INVALID";
@@ -51,7 +64,7 @@ function safeSunoError(error: unknown): string {
 }
 
 async function selectModel(env: Env) {
-  const workersai = createWorkersAI({ binding: env.AI });
+  const workersai = createChatWorkersAI(env.AI);
   const requested =
     env.ROOT_MODEL || "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
   const fallback = workersai("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
@@ -101,6 +114,7 @@ export class ChatAgent extends AIChatAgent<Env> {
       ? Math.max(60, Math.min(1440, configuredMinutes))
       : 360;
     await this.scheduleEvery(minutes * 60, "scheduledStrategistReview");
+    await this.scheduleEvery(60, "scheduledReleaseTick");
     await this.queueSunoPreparation();
     if (store.recentDirectives().length === 0) {
       const failedBefore = Boolean(
@@ -150,6 +164,7 @@ export class ChatAgent extends AIChatAgent<Env> {
     const missions = store.recentMissions();
     return {
       programId: MUSIC_PROGRAM_ID,
+      releases: store.recentReleases().map(releaseSummary),
       lastDecision: directives[0]?.decision ?? "NONE",
       currentMission: store.currentMission(),
       lastMission: missions[0]
@@ -207,14 +222,108 @@ export class ChatAgent extends AIChatAgent<Env> {
   getMusicWorkspace() {
     const store = new AutonomyStore(this.sql.bind(this));
     store.initialize();
+    ensureReleases(store);
     return {
       programId: MUSIC_PROGRAM_ID,
+      releaseStrategy: RELEASE_STRATEGY,
+      releases: store.recentReleases().map((release) => {
+        const handoff = store.getSunoHandoff(release.handoffId)!;
+        const hasAudio = store.hasAudio(release.audioHash);
+        return {
+          ...release,
+          distributionPacket: distributionPacket(release, handoff),
+          hasAudio,
+          blockers: approvalBlockers(release, handoff, hasAudio)
+        };
+      }),
       artistBrief: ARTIST_BRIEF,
       drafts: store.recentMusicArtifacts(),
       sunoHandoffs: store.recentSunoHandoffs(),
       lastDirective: store.recentDirectives()[0] ?? null,
       lastMission: store.recentMissions()[0] ?? null
     };
+  }
+
+  async scheduledReleaseTick() {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const failedAudit = store
+      .recentSunoHandoffs()
+      .find(
+        (handoff) =>
+          handoff.status === "FAILED" &&
+          handoff.submission?.audioEvidence?.transcript
+      );
+    if (failedAudit) await this.retrySunoAudit(failedAudit.id);
+    await runReleaseTick(store, this.env);
+  }
+
+  async approveMusicRelease(input: unknown) {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    ensureReleases(store);
+    const parsed = approvalSchema.parse(input);
+    const id = parsed.handoffId;
+    const capabilities = z
+      .object({
+        rendererReady: z.boolean(),
+        youtubeConfigured: z.boolean(),
+        channelId: z.string().nullable()
+      })
+      .parse(await releaseBridge(this.env, "/music/capabilities"));
+    if (
+      !capabilities.rendererReady ||
+      !capabilities.youtubeConfigured ||
+      capabilities.channelId !== parsed.channelId
+    )
+      return { accepted: false, reason: "CHANNEL_NOT_CONNECTED_OR_CHANGED" };
+    const release = store.getRelease(`release:${id}`);
+    const handoff = store.getSunoHandoff(id);
+    if (!release || !handoff)
+      return { accepted: false, reason: "HANDOFF_NOT_FOUND" };
+    const approved = await approveRelease(
+      release,
+      handoff,
+      store.hasAudio(release.audioHash),
+      input
+    );
+    // Recheck after hashing (an async boundary) so duplicate approvals cannot reset jobs.
+    if (store.getRelease(release.id)?.approvedAt)
+      return { accepted: false, reason: "ALREADY_APPROVED" };
+    store.saveRelease(approved);
+    store.recordEvent("MUSIC_RELEASE_APPROVED", { releaseId: release.id });
+    await this.schedule(1, "scheduledReleaseTick");
+    return { accepted: true };
+  }
+
+  setReleasePaused(id: string, paused: boolean) {
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const release = store.getRelease(id);
+    if (!release) return { accepted: false, reason: "RELEASE_NOT_FOUND" };
+    store.saveRelease({
+      ...release,
+      paused,
+      updatedAt: new Date().toISOString()
+    });
+    return { accepted: true };
+  }
+
+  async retainReleaseAudio(handoffId: string, base64: string) {
+    if (base64.length > 8_000_000) throw new Error("AUDIO_TOO_LARGE");
+    const store = new AutonomyStore(this.sql.bind(this));
+    store.initialize();
+    const handoff = store.getSunoHandoff(handoffId);
+    if (!handoff?.submission?.audioEvidence)
+      throw new Error("AUDIO_NOT_AUDITED");
+    const hash = Buffer.from(
+      await crypto.subtle.digest("SHA-256", Buffer.from(base64, "base64"))
+    ).toString("hex");
+    if (hash !== handoff.submission.audioEvidence.sha256)
+      throw new Error("AUDIO_HASH_MISMATCH");
+    store.saveAudio(hash, base64);
+    ensureReleases(store);
+    return { accepted: true };
   }
 
   async queueSunoPreparation() {
@@ -335,7 +444,7 @@ export class ChatAgent extends AIChatAgent<Env> {
     }
   }
 
-  async submitSunoResult(input: unknown) {
+  async submitSunoResult(input: unknown, audioBase64?: string) {
     const submission = sunoSubmissionSchema.parse(input);
     const store = new AutonomyStore(this.sql.bind(this));
     store.initialize();
@@ -354,6 +463,7 @@ export class ChatAgent extends AIChatAgent<Env> {
       handoffId: handoff.id,
       hasTranscript: readyForAudit
     });
+    if (audioBase64) await this.retainReleaseAudio(handoff.id, audioBase64);
     if (readyForAudit)
       await this.schedule(10, "scheduledAuditSuno", handoff.id, {
         idempotent: true
@@ -862,6 +972,7 @@ export class ChatAgent extends AIChatAgent<Env> {
         recentDirectives: store.recentDirectives(),
         recentMissions: previousMissions,
         musicArtifacts: store.recentMusicArtifacts(),
+        releaseProgress: store.recentReleases().map(releaseSummary),
         sunoHandoffs: store.recentSunoHandoffs().map((handoff) => ({
           title: handoff.title,
           status: handoff.status,
@@ -975,7 +1086,7 @@ Artist brief: ${JSON.stringify(ARTIST_BRIEF)}
 
 ${getSchedulePrompt({ date: new Date() })}
 
-If the user asks to schedule a task, use the schedule tool.
+Use scheduleTask only when the user explicitly requests a future time, delay or recurring schedule. Writing or planning a song is not a scheduling request. If no time was requested, answer conversationally. If a tool fails, explain the failure in plain language; do not repeat the same call.
 `,
 
       messages: pruneMessages({
@@ -1011,7 +1122,7 @@ If the user asks to schedule a task, use the schedule tool.
             }
 
             try {
-              this.schedule(input, "executeTask", description, {
+              await this.schedule(input, "executeTask", description, {
                 idempotent: true
               });
 
@@ -1058,7 +1169,11 @@ If the user asks to schedule a task, use the schedule tool.
         })
       },
 
-      stopWhen: stepCountIs(20),
+      // Always reserve a final step for a conversational answer rather than
+      // allowing repeated malformed tool calls to consume twenty model turns.
+      prepareStep: ({ stepNumber }) =>
+        stepNumber >= 1 ? { toolChoice: "none" as const } : {},
+      stopWhen: stepCountIs(2),
 
       abortSignal: options?.abortSignal
     });
@@ -1092,6 +1207,7 @@ export default {
             [
               "/admin/autonomy",
               "/admin/music",
+              "/admin/release-system",
               "/admin/bridge-health",
               "/admin/search-diagnostics"
             ].includes(pathname)) ||
@@ -1101,7 +1217,10 @@ export default {
               "/admin/review-lyrics",
               "/admin/suno/prepare",
               "/admin/suno/submit",
-              "/admin/suno/retry-audit"
+              "/admin/suno/retry-audit",
+              "/admin/release/approve",
+              "/admin/release/pause",
+              "/admin/release/audio"
             ].includes(pathname)) ||
           (request.method === "POST" &&
             [
@@ -1126,6 +1245,82 @@ export default {
         return Response.json(await stub.getMusicWorkspace(), {
           headers: { "cache-control": "no-store" }
         });
+      }
+      if (pathname === "/admin/release-system") {
+        try {
+          return Response.json(
+            await releaseBridge(env, "/music/capabilities"),
+            { headers: { "cache-control": "no-store" } }
+          );
+        } catch {
+          return Response.json(
+            {
+              rendererReady: false,
+              youtubeConfigured: false,
+              spotifyConfigured: false,
+              error: "BRIDGE_UNAVAILABLE"
+            },
+            { headers: { "cache-control": "no-store" } }
+          );
+        }
+      }
+      if (
+        pathname === "/admin/release/approve" ||
+        pathname === "/admin/release/pause"
+      ) {
+        try {
+          const body = await request.text();
+          if (body.length > 4000)
+            return Response.json(
+              { error: "PAYLOAD_TOO_LARGE" },
+              { status: 413 }
+            );
+          const input: unknown = JSON.parse(body);
+          const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
+          if (pathname.endsWith("/approve"))
+            return Response.json(await stub.approveMusicRelease(input));
+          const parsed = z
+            .object({ id: z.string().max(300), paused: z.boolean() })
+            .parse(input);
+          return Response.json(
+            await stub.setReleasePaused(parsed.id, parsed.paused)
+          );
+        } catch {
+          return Response.json(
+            { error: "RELEASE_NOT_READY_OR_INPUT_INVALID" },
+            { status: 400 }
+          );
+        }
+      }
+      if (pathname === "/admin/release/audio") {
+        try {
+          if (Number(request.headers.get("content-length") ?? 0) > 7_000_000)
+            return Response.json(
+              { error: "UPLOAD_TOO_LARGE" },
+              { status: 413 }
+            );
+          const form = await request.formData();
+          const file = form.get("audio");
+          const id = z.string().min(1).max(250).parse(form.get("handoffId"));
+          if (
+            !(file instanceof File) ||
+            file.size > 6_000_000 ||
+            !file.name.toLowerCase().endsWith(".mp3")
+          )
+            throw new Error("INVALID_AUDIO");
+          const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
+          return Response.json(
+            await stub.retainReleaseAudio(
+              id,
+              Buffer.from(await file.arrayBuffer()).toString("base64")
+            )
+          );
+        } catch {
+          return Response.json(
+            { error: "ORIGINAL_AUDITED_MP3_REQUIRED_MAX_6MB" },
+            { status: 400 }
+          );
+        }
       }
       if (pathname === "/admin/bridge-health") {
         if (!env.OPENCLAW_BASE_URL || !env.OPENCLAW_GATEWAY_TOKEN)
@@ -1197,6 +1392,7 @@ export default {
         if (size > 10_000_000)
           return Response.json({ error: "UPLOAD_TOO_LARGE" }, { status: 413 });
         let submission: unknown;
+        let retainedAudio: string | undefined;
         let transcriptionError = false;
         try {
           const form = await request.formData();
@@ -1214,6 +1410,7 @@ export default {
                 { status: 400 }
               );
             const bytes = await audio.arrayBuffer();
+            retainedAudio = Buffer.from(bytes).toString("base64");
             const digest = await crypto.subtle.digest("SHA-256", bytes);
             const sha256 = [...new Uint8Array(digest)]
               .map((value) => value.toString(16).padStart(2, "0"))
@@ -1255,7 +1452,10 @@ export default {
         }
         const stub = env.ChatAgent.get(env.ChatAgent.idFromName("default"));
         return Response.json(
-          { ...(await stub.submitSunoResult(submission)), transcriptionError },
+          {
+            ...(await stub.submitSunoResult(submission, retainedAudio)),
+            transcriptionError
+          },
           { headers: { "cache-control": "no-store" } }
         );
       }
