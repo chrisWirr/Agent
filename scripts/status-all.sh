@@ -47,7 +47,7 @@ print("ROOT-Mission:", "läuft" if status.get("currentMission") else "keine akti
 for handoff in status.get("sunoHandoffs", [])[:1]:
     print("Suno-Auftrag:", handoff.get("title", "Song"), "—", handoff.get("status", "unbekannt"))
 if "MUSIC_STRATEGIST_REVIEW_FAILED" in status.get("recentEvents", [])[:3]:
-    print("Hinweis: Der letzte Strategenlauf ist fehlgeschlagen; Modellroute prüfen.")
+    print("Hinweis: Der letzte Strategenlauf ist fehlgeschlagen; die neue Modellroute wartet auf den nächsten Review.")
 raise SystemExit(0 if bridge_ok else 1)
 PY
 then

@@ -52,6 +52,50 @@ export type SunoPreparation = z.infer<typeof sunoPreparationSchema>;
 export type SunoSubmission = z.infer<typeof sunoSubmissionSchema>;
 export type SunoAudit = z.infer<typeof sunoAuditSchema>;
 
+function auditText(value: unknown, limit: number): string {
+  return typeof value === "string" ? value.trim().slice(0, limit) : "";
+}
+
+function auditList(value: unknown): string[] {
+  const entries = Array.isArray(value) ? value : value == null ? [] : [value];
+  return entries
+    .slice(0, 5)
+    .map((entry) => auditText(entry, 350))
+    .filter(Boolean);
+}
+
+export function parseSunoAudit(text: string): SunoAudit {
+  const raw = parseModelJson(text, z.record(z.string(), z.unknown()));
+  const summary = auditText(raw.summary, 1600);
+  const lyricFidelity = auditText(
+    raw.lyricFidelity ?? raw.lyric_fidelity,
+    1200
+  );
+  const validDecision = sunoAuditSchema.shape.decision.safeParse(raw.decision);
+  const decision =
+    validDecision.success && summary.length >= 20 && lyricFidelity.length >= 10
+      ? validDecision.data
+      : "INSUFFICIENT_EVIDENCE";
+  return sunoAuditSchema.parse({
+    decision,
+    summary:
+      summary.length >= 20
+        ? summary
+        : "The model did not provide enough reliable evidence for a release decision.",
+    lyricFidelity:
+      lyricFidelity.length >= 10
+        ? lyricFidelity
+        : "Lyric fidelity could not be assessed reliably.",
+    strengths: auditList(raw.strengths),
+    issues: auditList(raw.issues),
+    uncertainties: auditList(raw.uncertainties),
+    releaseProposal: auditText(
+      raw.releaseProposal ?? raw.release_proposal,
+      2400
+    )
+  });
+}
+
 export type SunoHandoff = {
   id: string;
   sourceArtifactId: string;
@@ -155,5 +199,5 @@ export async function auditSunoReturn(
     "SUNO_AUDITOR",
     `You are an independent music release auditor. Assess the human-selected Suno result using the original lyrics, expected style, human listening observations, and the automated speech transcript. The transcript can be wrong, especially over music; never claim you listened to the audio or verified timbre, groove, mix, melody or emotional delivery directly. Credit those only to the human's notes and mark them as reported. Compare lyric fidelity and structure cautiously. Decide RELEASE_CANDIDATE only when the evidence is persuasive, the song fits the brief, and no material problem is reported. If the evidence is thin choose INSUFFICIENT_EVIDENCE. Give a concrete staged release and audience-feedback proposal, but do not publish, distribute, contact anyone, or claim rights have been verified. Return ONLY JSON with keys decision (RELEASE_CANDIDATE|REVISE|REJECT|INSUFFICIENT_EVIDENCE), summary, lyricFidelity, strengths (array), issues (array), uncertainties (array), releaseProposal (string).\nARTIST: ${JSON.stringify(ARTIST_BRIEF)}\nTITLE: ${handoff.title}\nORIGINAL LYRICS: ${handoff.lyrics.slice(0, 8000)}\nEXPECTED STYLE: ${handoff.preparation?.stylePrompt ?? ""}\nHUMAN NOTES (reported, not independently verified): ${submission.listeningNotes}\nTRANSCRIPT (automated, imperfect): ${submission.audioEvidence.transcript.slice(0, 10000)}\nRIGHTS BASIS REPORTED BY HUMAN: ${submission.rightsBasis}`
   );
-  return parseModelJson(reply.text, sunoAuditSchema);
+  return parseSunoAudit(reply.text);
 }

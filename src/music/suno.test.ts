@@ -6,6 +6,7 @@ import type { ModelRunner } from "../autonomy/runtime";
 import type { Route } from "../autonomy/schemas";
 import {
   auditSunoReturn,
+  parseSunoAudit,
   prepareSunoPackage,
   songText,
   sunoAuditStatus,
@@ -158,6 +159,22 @@ test("returned recording audit requires audio transcript and states its limits",
   };
   const audit = await auditSunoReturn(handoff, runner);
   assert.equal(audit.decision, "REVISE");
+});
+
+test("Suno audit normalizes verbose model fields without inventing approval", () => {
+  const audit = parseSunoAudit(
+    JSON.stringify({
+      decision: "RELEASE_CANDIDATE",
+      summary: "short",
+      lyric_fidelity: "unclear",
+      strengths: "The reported chorus is memorable",
+      issues: ["The last word is blurred"],
+      uncertainties: ["No direct listening evidence"]
+    })
+  );
+  assert.equal(audit.decision, "INSUFFICIENT_EVIDENCE");
+  assert.deepEqual(audit.strengths, ["The reported chorus is memorable"]);
+  assert.equal(audit.releaseProposal, "");
 });
 
 test("Suno handoff versions persist independently in Durable Object SQLite", () => {

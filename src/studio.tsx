@@ -207,6 +207,7 @@ export default function StudioPage() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [retryMessage, setRetryMessage] = useState("");
 
   const loadWorkspace = async () => {
     if (!token.trim()) {
@@ -503,6 +504,7 @@ export default function StudioPage() {
                             variant="secondary"
                             className="mt-4"
                             onClick={async () => {
+                              setRetryMessage("");
                               const auditFailed = Boolean(handoff.submission);
                               const response = await fetch(
                                 auditFailed
@@ -521,11 +523,31 @@ export default function StudioPage() {
                                     : undefined
                                 }
                               );
-                              if (response.ok) await loadWorkspace();
+                              const result = (await response.json()) as {
+                                queued?: boolean;
+                                reason?: string;
+                              };
+                              if (result.queued) {
+                                setRetryMessage(
+                                  "Prüfung gestartet. Bitte später aktualisieren."
+                                );
+                                await loadWorkspace();
+                              } else {
+                                setRetryMessage(
+                                  result.reason === "AUDIT_RETRY_LIMIT"
+                                    ? "Tageslimit für die automatische Prüfung erreicht. Bitte morgen erneut versuchen."
+                                    : `Prüfung konnte nicht gestartet werden: ${result.reason ?? response.status}`
+                                );
+                              }
                             }}
                           >
                             Prüfung erneut starten
                           </Button>
+                          {retryMessage && (
+                            <output className="mt-2 text-sm">
+                              {retryMessage}
+                            </output>
+                          )}
                         </>
                       )}
                     </Surface>
