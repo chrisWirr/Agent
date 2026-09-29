@@ -38,9 +38,25 @@ import {
   type SunoHandoff
 } from "./music/suno";
 
+function safeSunoError(error: unknown): string {
+  if (error instanceof z.ZodError) return "MODEL_RESPONSE_SCHEMA_INVALID";
+  if (error instanceof SyntaxError) return "MODEL_RESPONSE_JSON_INVALID";
+  if (error instanceof Error) {
+    if (error.message === "Model did not return a JSON object")
+      return "MODEL_RESPONSE_JSON_MISSING";
+    if (error.message === "MODEL_REQUEST_FAILED") return error.message;
+    if (error.message === "AUDIO_TRANSCRIPT_REQUIRED") return error.message;
+  }
+  return "SUNO_AUDIT_FAILED";
+}
+
 async function selectModel(env: Env) {
   const workersai = createWorkersAI({ binding: env.AI });
-  const fallback = workersai("@cf/zai-org/glm-4.7-flash");
+  const requested =
+    env.ROOT_MODEL || "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+  const fallback = workersai("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+
+  if (requested.startsWith("@cf/")) return workersai(requested);
 
   if (!env.OPENCLAW_BASE_URL || !env.OPENCLAW_GATEWAY_TOKEN) {
     return fallback;
@@ -65,7 +81,7 @@ async function selectModel(env: Env) {
       apiKey: env.OPENCLAW_GATEWAY_TOKEN
     });
 
-    return openclaw("openclaw/main");
+    return openclaw(requested);
   } catch {
     console.warn("OpenClaw is unavailable; using Workers AI");
     return fallback;
@@ -364,6 +380,7 @@ export class ChatAgent extends AIChatAgent<Env> {
         ...handoff,
         audit,
         status,
+        lastError: undefined,
         updatedAt: new Date().toISOString()
       });
       store.recordEvent("MUSIC_SUNO_AUDIT_COMPLETED", {
@@ -371,13 +388,15 @@ export class ChatAgent extends AIChatAgent<Env> {
         decision: audit.decision,
         status
       });
-    } catch {
+    } catch (error) {
+      const code = safeSunoError(error);
       store.saveSunoHandoff({
         ...handoff,
         status: "FAILED",
+        lastError: code,
         updatedAt: new Date().toISOString()
       });
-      store.recordEvent("MUSIC_SUNO_AUDIT_FAILED", { handoffId });
+      store.recordEvent("MUSIC_SUNO_AUDIT_FAILED", { handoffId, code });
     }
   }
 
@@ -401,6 +420,7 @@ export class ChatAgent extends AIChatAgent<Env> {
     store.saveSunoHandoff({
       ...handoff,
       status: "AUDITING",
+      lastError: undefined,
       updatedAt: new Date().toISOString()
     });
     await this.schedule(10, "scheduledAuditSuno", handoffId, {

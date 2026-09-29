@@ -24,6 +24,7 @@ type SunoHandoff = {
   title: string;
   lyrics: string;
   status: string;
+  lastError?: string;
   preparation: {
     decision: "READY" | "REVISE";
     reason: string;
@@ -488,34 +489,44 @@ export default function StudioPage() {
                         </div>
                       )}
                       {handoff.status === "FAILED" && (
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          className="mt-4"
-                          onClick={async () => {
-                            const auditFailed = Boolean(handoff.submission);
-                            const response = await fetch(
-                              auditFailed
-                                ? "/admin/suno/retry-audit"
-                                : "/admin/suno/prepare",
-                              {
-                                method: "POST",
-                                headers: {
-                                  Authorization: `Bearer ${token.trim()}`,
-                                  ...(auditFailed
-                                    ? { "Content-Type": "application/json" }
-                                    : {})
-                                },
-                                body: auditFailed
-                                  ? JSON.stringify({ handoffId: handoff.id })
-                                  : undefined
-                              }
-                            );
-                            if (response.ok) await loadWorkspace();
-                          }}
-                        >
-                          Prüfung erneut starten
-                        </Button>
+                        <>
+                          {handoff.lastError && (
+                            <p
+                              role="alert"
+                              className="mt-4 text-sm text-red-600"
+                            >
+                              Prüfung fehlgeschlagen: {handoff.lastError}
+                            </p>
+                          )}
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            className="mt-4"
+                            onClick={async () => {
+                              const auditFailed = Boolean(handoff.submission);
+                              const response = await fetch(
+                                auditFailed
+                                  ? "/admin/suno/retry-audit"
+                                  : "/admin/suno/prepare",
+                                {
+                                  method: "POST",
+                                  headers: {
+                                    Authorization: `Bearer ${token.trim()}`,
+                                    ...(auditFailed
+                                      ? { "Content-Type": "application/json" }
+                                      : {})
+                                  },
+                                  body: auditFailed
+                                    ? JSON.stringify({ handoffId: handoff.id })
+                                    : undefined
+                                }
+                              );
+                              if (response.ok) await loadWorkspace();
+                            }}
+                          >
+                            Prüfung erneut starten
+                          </Button>
+                        </>
                       )}
                     </Surface>
                   ))}

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=ROOT Music Studio starten
+Comment=Startet OpenClaw, die Cloudflare-Brücke und öffnet den Music Workspace
+Exec=/home/linu/Dokumente/agent/scripts/start-all.sh --pause
+Icon=audio-x-generic
+Terminal=true
+Categories=AudioVideo;Utility;
+StartupNotify=false

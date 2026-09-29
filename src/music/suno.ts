@@ -72,6 +72,7 @@ export type SunoHandoff = {
     | "FAILED";
   submission: SunoSubmission | null;
   audit: SunoAudit | null;
+  lastError?: string;
   createdAt: string;
   updatedAt: string;
 };

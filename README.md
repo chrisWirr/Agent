@@ -27,6 +27,12 @@ npm run test:autonomy
 npm run dev
 ```
 
+## Alles starten
+
+Die drei lokalen User-Services starten automatisch bei der Anmeldung. Für einen manuellen Start mit Statusprüfung und geöffneter Studio-Seite dient `./scripts/start-all.sh`; ohne Browser `./scripts/start-all.sh --no-browser`. `./scripts/status-all.sh` prüft die Services und die geschützte Verbindung zum Cloudflare Worker. Der Starter `ROOT Music Studio starten.desktop` ist zusätzlich im Anwendungsmenü und auf dem Desktop installiert. Die Studio-Seite ist auch direkt unter `https://agent.christian-schoenherr73.workers.dev/studio` erreichbar. Der Worker selbst läuft dauerhaft bei Cloudflare und muss lokal nicht gestartet werden.
+
+Die Statusprüfung liest den Admin-Token aus `~/.config/agent-autonomy/admin-token`, ohne ihn auszugeben. Fehlt die Datei oder ist die Verbindung unterbrochen, meldet sie dies als Fehler.
+
 Der lokale Smoke-Test nutzt ein laufendes OpenClaw-Gateway und einen lokal bereitgestellten Token, der nicht in Git gehört:
 
 ```bash
@@ -35,12 +41,12 @@ OPENCLAW_GATEWAY_TOKEN_FILE=/path/to/local/token npx tsx scripts/smoke-autonomy.
 
 ## Laufzeit und Modelle
 
-`wrangler.jsonc` routet STRATEGIST nach `openclaw/strategist`, ROOT und die meisten anderen Rollen nach `openclaw/main`; der Lyrics-Experte sowie Suno-Vorbereitung und -Audit laufen über Workers AI. Bei einer nicht verfügbaren Brücke fällt die Anwendung auf Workers AI zurück. `STRATEGIST_REVIEW_MINUTES` bestimmt den Abstand der Reviews (Standard: 360 Minuten). Die Grenzwerte sind zwei Strategieaufrufe und eine Mission pro 24 Stunden, höchstens zwei von ROOT geplante Spezialisten plus den automatischen Lyrics-Experten pro Songmission und eine Modellantwort pro Spezialist.
+`wrangler.jsonc` routet STRATEGIST, ROOT, die Spezialisten und den Lyrics-Experten derzeit über die Cloudflare-AI-Bindung auf Llama 3.3 70B. Auch Suno-Vorbereitung und -Audit nutzen dieses Modell. So kann der Worker trotz erschöpftem AgentRouter-Budget weiterarbeiten. `STRATEGIST_REVIEW_MINUTES` bestimmt den Abstand der Reviews (Standard: 360 Minuten). Die Grenzwerte sind zwei erfolgreiche Strategieaufrufe und eine Mission pro 24 Stunden, höchstens zwei von ROOT geplante Spezialisten plus den automatischen Lyrics-Experten pro Songmission und eine Modellantwort pro Spezialist.
 
 Auf dem Linux-Rechner versorgen diese User-Services die Brücke und das Gateway:
 
 ```bash
-systemctl --user start openclaw-gateway.service agent-local-bridge.service agent-cloudflared.service
+systemctl --user enable --now openclaw-gateway.service agent-local-bridge.service agent-cloudflared.service
 systemctl --user status openclaw-gateway.service agent-local-bridge.service agent-cloudflared.service
 ```
 

@@ -5,9 +5,9 @@
   "compatibility_date": "2026-06-11",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "STRATEGIST_MODEL": "openclaw/strategist",
-    "ROOT_MODEL": "openclaw/main",
-    "DEFAULT_WORKER_MODEL": "openclaw/main",
+    "STRATEGIST_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "ROOT_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "DEFAULT_WORKER_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "LYRICS_EXPERT_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
   },
   "ai": { "binding": "AI", "remote": true },
